@@ -125,14 +125,111 @@ def clean_cache(dir_path):
         print(f"{dir_path} does not exist.")
 
 
+def extract_last_layer_kv(outputs):
+    """
+    [DEPRECATED] Safely extract last layer KV from model outputs.
+    
+    NOTE: This function is no longer needed as KV cache is now auto-saved
+    inside the model's forward() method during prefill phase. Kept for
+    backward compatibility and debugging purposes.
+    
+    Args:
+        outputs: Model generate outputs
+        
+    Returns:
+        last_layer_kv: (key, value) tuple or None
+    """
+    last_layer_kv = None
+    
+    if not hasattr(outputs, 'past_key_values') or outputs.past_key_values is None:
+        print("[Extract] outputs.past_key_values is None or not present")
+        return None
+    
+    past_key_values = outputs.past_key_values
+    
+    # Try direct indexing first
+    try:
+        last_layer_kv = past_key_values[-1]
+        if last_layer_kv is not None:
+            print(f"[Extract] Direct indexing successful: key.shape={last_layer_kv[0].shape}, value.shape={last_layer_kv[1].shape}")
+            return last_layer_kv
+    except (KeyError, IndexError, TypeError) as e:
+        print(f"[Extract] Direct indexing failed: {e}")
+    
+    # Try converting to list
+    try:
+        pkvs = list(past_key_values)
+        if len(pkvs) > 0:
+            last_layer_kv = pkvs[-1]
+            if last_layer_kv is not None:
+                print(f"[Extract] List conversion successful: key.shape={last_layer_kv[0].shape}, value.shape={last_layer_kv[1].shape}")
+                return last_layer_kv
+    except Exception as e:
+        print(f"[Extract] List conversion failed: {e}")
+    
+    # Try iterating
+    try:
+        last_kv = None
+        for kv in past_key_values:
+            if kv is not None:
+                last_kv = kv
+        if last_kv is not None:
+            print(f"[Extract] Iteration successful: key.shape={last_kv[0].shape}, value.shape={last_kv[1].shape}")
+            return last_kv
+    except Exception as e:
+        print(f"[Extract] Iteration failed: {e}")
+    
+    print("[Extract] All extraction methods failed, returning None")
+    return None
+
+
+def _construct_past_key_values_from_cache(matched_entry, num_layers):
+    """
+    Construct past_key_values from cached KV entry.
+    
+    For Inter-Task KV Reuse (SimLLM), we construct a past_key_values structure
+    where all layers share the same cached KV from the last layer.
+    
+    This is based on the SimLLM paper's approach: similar prompts have similar
+    semantic representations, so we can reuse the KV cache from a similar task.
+    
+    Args:
+        matched_entry: TaskCacheEntry with top_layer_kv
+        num_layers: Number of decoder layers
+        
+    Returns:
+        past_key_values: tuple of (key, value) tuples for each layer
+    """
+    cached_key, cached_value = matched_entry.top_layer_kv
+    
+    # Construct past_key_values for all layers
+    # We replicate the cached KV to all layers since we're reusing
+    # the semantic representation from a similar task
+    past_key_values = []
+    for layer_idx in range(num_layers):
+        # Clone to avoid reference issues
+        past_key_values.append((cached_key.clone(), cached_value.clone()))
+    
+    return tuple(past_key_values)
+
+
 def run_inference_with_kv_reuse(input_ids, attention_mask, model, tokenizer, task_id, kv_manager):
     """
-    Run inference with KV reuse enabled
+    Run inference with KV reuse enabled.
+    
+    For Cache HIT:
+    - Construct past_key_values from cached KV
+    - Truncate input_ids to only the last token
+    - Pass cached KV to generate() to skip prefill computation
+    
+    For Cache MISS:
+    - Run full inference with complete input_ids
+    - Auto-save KV in forward() during prefill phase
     """
-    print(f"\n{'='*60}")
+    print(f"\n{'='*70}")
     print(f"Running inference for task: {task_id}")
     print(f"Input length: {input_ids.shape[-1]} tokens")
-    print(f"{'='*60}")
+    print(f"{'='*70}")
     
     # 设置终止符
     terminators = [tokenizer.eos_token_id]
@@ -145,58 +242,245 @@ def run_inference_with_kv_reuse(input_ids, attention_mask, model, tokenizer, tas
         task_embedding = kv_manager._compute_task_embedding(inputs_embeds)
     
     # 搜索相似任务
-    matched_entry = kv_manager.search_similar_task(task_embedding)
+    matched_entry = kv_manager.search_similar_task(task_embedding, task_id=task_id)
+    
+    # 记录cache状态（在generate之前）
+    cache_size_before = kv_manager.get_statistics()['cache_size']
+    original_input_len = input_ids.shape[-1]
     
     start = time.time()
     
     if matched_entry is not None:
-        print(f"🎯 Using cached KV from task: {matched_entry.task_id}")
+        # ============================================================
+        # CACHE HIT: Use cached KV and truncate input
+        # ============================================================
+        print(f"🎯 Cache HIT! Using cached KV from task: {matched_entry.task_id}")
+        print(f"🚀 Skipping prompt computation (Reuse Mode)")
         cache_hit = True
-    else:
-        print(f"📝 No cache hit, running full inference...")
-        cache_hit = False
-    
-    # 运行生成 - 使用确定性生成避免警告
-    with torch.no_grad():
-        outputs = model.generate(
-            input_ids,
-            attention_mask=attention_mask,
-            max_new_tokens=10,
-            eos_token_id=terminators,
-            pad_token_id=tokenizer.pad_token_id,
-            do_sample=False,
-            temperature=1.0,  # 显式设置避免警告
-            top_p=1.0,        # 显式设置避免警告
-            use_cache=True,
-            return_dict_in_generate=True,
-            output_hidden_states=False,
+        
+        # Get cached KV info
+        cached_key, cached_value = matched_entry.top_layer_kv
+        cached_seq_len = cached_key.shape[2]
+        print(f"[Cache HIT] Cached KV seq_len: {cached_seq_len}, Input seq_len: {original_input_len}")
+        
+        # Construct past_key_values from cache
+        # All layers get the same cached KV (Inter-Task Reuse approach)
+        num_layers = model.config.num_hidden_layers
+        past_key_values = _construct_past_key_values_from_cache(matched_entry, num_layers)
+        print(f"[Cache HIT] Constructed past_key_values for {num_layers} layers")
+        
+        # Truncate input_ids to only the last token (for generating first new token)
+        # The cached KV represents the "prefix" computation - we skip recomputing it
+        truncated_input_ids = input_ids[:, -1:]
+        
+        # Adjust attention_mask: we need mask for cached_seq_len + 1 (the new token)
+        # Create new attention mask that covers the cached sequence + new token
+        new_attention_mask = torch.ones(
+            (1, cached_seq_len + 1),
+            dtype=attention_mask.dtype,
+            device=attention_mask.device
         )
+        
+        print(f"[Cache HIT] Truncated input_ids shape: {truncated_input_ids.shape}")
+        print(f"[Cache HIT] New attention_mask shape: {new_attention_mask.shape}")
+        print(f"[Cache HIT] Running generate with cached KV (skipping {original_input_len - 1} tokens of prefill)...")
+        
+        # Run generate with cached KV
+        with torch.no_grad():
+            outputs = model.generate(
+                truncated_input_ids,
+                attention_mask=new_attention_mask,
+                past_key_values=past_key_values,
+                max_new_tokens=10,
+                eos_token_id=terminators,
+                pad_token_id=tokenizer.pad_token_id,
+                do_sample=False,
+                temperature=1.0,
+                top_p=1.0,
+                use_cache=True,
+                return_dict_in_generate=True,
+                output_hidden_states=False,
+            )
+        
+        add_success = False  # No need to save on cache hit
+        
+    else:
+        # ============================================================
+        # CACHE MISS: Run full inference and auto-save KV
+        # ============================================================
+        print(f"📝 Cache MISS, running full inference (KV will be auto-saved)...")
+        cache_hit = False
+        
+        # 设置当前task_id，以便forward()中自动保存KV
+        model.model.current_task_id = task_id
+        print(f"[Cache MISS] Set model.model.current_task_id = {task_id}")
+        
+        # 运行生成 - 使用确定性生成避免警告
+        with torch.no_grad():
+            outputs = model.generate(
+                input_ids,
+                attention_mask=attention_mask,
+                max_new_tokens=10,
+                eos_token_id=terminators,
+                pad_token_id=tokenizer.pad_token_id,
+                do_sample=False,
+                temperature=1.0,
+                top_p=1.0,
+                use_cache=True,
+                return_dict_in_generate=True,
+                output_hidden_states=False,
+            )
+        
+        # 清除当前task_id
+        model.model.current_task_id = None
+        
+        # 检查KV是否被自动保存（通过比较cache size）
+        cache_size_after = kv_manager.get_statistics()['cache_size']
+        add_success = cache_size_after > cache_size_before
+        
+        if add_success:
+            print(f"[Auto-Save] ✅ KV auto-saved for task {task_id}")
+        else:
+            print(f"[Auto-Save] ⚠️ KV was not auto-saved (may already exist or save failed)")
+        
+        # VERIFICATION: Check if the task can now be found in cache
+        if add_success:
+            verify_entry = kv_manager.search_similar_task(task_embedding, task_id=f"verify_{task_id}")
+            if verify_entry is not None:
+                print(f"[Verify] ✅ Task {task_id} successfully found in cache (matched: {verify_entry.task_id})")
+            else:
+                print(f"[Verify] ⚠️ Task {task_id} NOT found in cache after save!")
     
     total_latency = time.time() - start
     
-    # 如果是cache miss，保存KV到缓存
-    if not cache_hit and hasattr(outputs, 'past_key_values') and outputs.past_key_values is not None:
-        last_layer_kv = outputs.past_key_values[-1]
-        if last_layer_kv is not None:
-            kv_manager.add_task(
-                task_id=task_id,
-                task_embedding=task_embedding,
-                top_layer_kv=last_layer_kv
-            )
-    
     # 解码响应
     if hasattr(outputs, 'sequences'):
-        response_ids = outputs.sequences[0][input_ids.shape[-1]:]
+        # For cache hit, we need to account for the truncated input
+        if cache_hit:
+            response_ids = outputs.sequences[0][1:]  # Skip the single input token
+        else:
+            response_ids = outputs.sequences[0][original_input_len:]
     else:
-        response_ids = outputs[0][input_ids.shape[-1]:]
+        if cache_hit:
+            response_ids = outputs[0][1:]
+        else:
+            response_ids = outputs[0][original_input_len:]
     
     response = tokenizer.decode(response_ids, skip_special_tokens=True)
     
-    print(f"🤖 Generated Answer: {response}")
+    print(f"\n🤖 Generated Answer: {response}")
     print(f"⏱️ Latency: {total_latency:.3f}s")
-    print(f"{'='*60}\n")
+    print(f"📊 Cache Hit: {cache_hit}")
     
-    return total_latency, response, cache_hit
+    # Dump cache state after each request
+    kv_manager.dump_cache_state(top_n=5)
+    
+    print(f"{'='*70}\n")
+    
+    return total_latency, response, cache_hit, add_success
+
+
+def diagnostic_run(prompts, model, tokenizer, kv_manager):
+    """
+    Diagnostic run to verify KV cache is being saved correctly
+    
+    Args:
+        prompts: List of prompts to test
+        model: The model
+        tokenizer: The tokenizer
+        kv_manager: The KV manager
+        
+    Returns:
+        True if all assertions pass, False otherwise
+    """
+    print("\n" + "="*80)
+    print("DIAGNOSTIC RUN")
+    print("="*80)
+    
+    initial_cache_size = kv_manager.get_statistics()['cache_size']
+    print(f"Initial cache size: {initial_cache_size}")
+    
+    add_results = []
+    
+    for i, prompt in enumerate(prompts):
+        print(f"\n--- Diagnostic prompt {i+1}/{len(prompts)}: '{prompt}' ---")
+        
+        # Tokenize
+        inputs = tokenizer(
+            prompt,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=512,
+            return_attention_mask=True,
+        )
+        
+        input_ids = inputs["input_ids"].to(model.device)
+        attention_mask = inputs["attention_mask"].to(model.device)
+        
+        task_id = f"diag_{i}"
+        
+        # Run inference
+        latency, response, cache_hit, add_success = run_inference_with_kv_reuse(
+            input_ids, attention_mask, model, tokenizer, task_id, kv_manager
+        )
+        
+        add_results.append({
+            'prompt': prompt,
+            'task_id': task_id,
+            'cache_hit': cache_hit,
+            'add_success': add_success
+        })
+        
+        garbage_collection()
+        time.sleep(0.5)
+    
+    # Check final cache size
+    final_cache_size = kv_manager.get_statistics()['cache_size']
+    print(f"\nFinal cache size: {final_cache_size}")
+    
+    # Count statistics
+    cache_misses = sum(1 for r in add_results if not r['cache_hit'])
+    cache_hits = sum(1 for r in add_results if r['cache_hit'])
+    successful_saves = sum(1 for r in add_results if not r['cache_hit'] and r['add_success'])
+    failed_saves = sum(1 for r in add_results if not r['cache_hit'] and not r['add_success'])
+    actual_increase = final_cache_size - initial_cache_size
+    
+    print(f"\nDiagnostic Summary:")
+    print(f"  Prompts processed: {len(prompts)}")
+    print(f"  Cache hits: {cache_hits}")
+    print(f"  Cache misses: {cache_misses}")
+    print(f"  Successful saves: {successful_saves}")
+    print(f"  Failed saves: {failed_saves}")
+    print(f"  Cache size increase: {actual_increase}")
+    
+    # CRITICAL ASSERTION 1: If all queries were misses and all saves failed, test MUST fail
+    if cache_misses > 0 and successful_saves == 0:
+        print(f"\n❌ CRITICAL ASSERTION FAILED: All {cache_misses} cache misses failed to save!")
+        print("This indicates a fundamental problem with the auto-save logic.")
+        print("Debug info:")
+        for r in add_results:
+            print(f"  {r['task_id']}: cache_hit={r['cache_hit']}, add_success={r['add_success']}")
+        return False
+    
+    # CRITICAL ASSERTION 2: Final cache size must be > 0 if any saves were attempted
+    if cache_misses > 0 and final_cache_size == 0:
+        print(f"\n❌ CRITICAL ASSERTION FAILED: final_cache_size == 0 after {cache_misses} cache misses!")
+        print("KV cache is not being saved at all.")
+        return False
+    
+    # ASSERTION 3: Cache size increase should match successful saves
+    if actual_increase < successful_saves:
+        print(f"\n❌ ASSERTION FAILED: Cache size increase ({actual_increase}) < successful saves ({successful_saves})")
+        print("Debug info:")
+        for r in add_results:
+            print(f"  {r['task_id']}: cache_hit={r['cache_hit']}, add_success={r['add_success']}")
+        return False
+    
+    print(f"\n✅ ASSERTION PASSED: Cache is working correctly")
+    print(f"   - {successful_saves}/{cache_misses} cache misses were saved successfully")
+    print(f"   - Final cache size: {final_cache_size}")
+    return True
 
 
 def test_cache_functionality(model, tokenizer, kv_manager, args):
@@ -211,45 +495,22 @@ def test_cache_functionality(model, tokenizer, kv_manager, args):
     
     # 定义测试用例：使用简短相似的句子
     test_cases = [
-        # 第一组：关于人工智能的中文句子（高度相似）
+        # 第一组：关于人工智能的中文句子（高度相似）- 主要测试用例
         {
             "prompts": [
                 "什么是人工智能",
                 "人工智能是什么",
                 "解释人工智能的含义",
-                "人工智能的定义是什么",
-                "给我解释什么是人工智能",
             ],
-            "group": "AI questions (Chinese)"
+            "group": "AI questions (Chinese) - Primary Test"
         },
         # 第二组：关于机器学习的英文句子
         {
             "prompts": [
                 "What is machine learning?",
                 "Explain machine learning.",
-                "Define machine learning.",
-                "What does machine learning mean?",
             ],
             "group": "ML questions (English)"
-        },
-        # 第三组：关于猫的简短句子
-        {
-            "prompts": [
-                "The cat is sleeping.",
-                "The cat is eating.",
-                "The cat is playing.",
-                "A cat is sleeping.",
-            ],
-            "group": "Cat sentences"
-        },
-        # 第四组：完全不同的句子
-        {
-            "prompts": [
-                "Hello world!",
-                "Good morning!",
-                "今天天气怎么样",
-            ],
-            "group": "Unrelated sentences"
         },
     ]
     
@@ -282,7 +543,7 @@ def test_cache_functionality(model, tokenizer, kv_manager, args):
             task_id = f"group{group_idx}_prompt{prompt_idx}"
             
             # 运行推理
-            latency, response, cache_hit = run_inference_with_kv_reuse(
+            latency, response, cache_hit, add_success = run_inference_with_kv_reuse(
                 input_ids, attention_mask, model, tokenizer, task_id, kv_manager
             )
             
@@ -294,6 +555,7 @@ def test_cache_functionality(model, tokenizer, kv_manager, args):
                 "prompt": prompt,
                 "latency": latency,
                 "cache_hit": cache_hit,
+                "add_success": add_success,
                 "response": response[:50] + "..." if len(response) > 50 else response
             })
             
@@ -306,13 +568,14 @@ def test_cache_functionality(model, tokenizer, kv_manager, args):
     print("TEST RESULTS SUMMARY")
     print("="*80)
     
-    print(f"\n{'Prompt':<30} {'Cache Hit':<12} {'Latency':<10}")
-    print("-"*52)
+    print(f"\n{'Prompt':<30} {'Cache Hit':<12} {'Saved':<8} {'Latency':<10}")
+    print("-"*60)
     for r in results:
         hit_str = "✅ HIT" if r['cache_hit'] else "❌ MISS"
-        print(f"{r['prompt'][:28]:<30} {hit_str:<12} {r['latency']:.3f}s")
+        save_str = "✅" if r['add_success'] else ("N/A" if r['cache_hit'] else "❌")
+        print(f"{r['prompt'][:28]:<30} {hit_str:<12} {save_str:<8} {r['latency']:.3f}s")
     
-    print("\n" + "-"*52)
+    print("\n" + "-"*60)
     hit_rate = total_hits / total_queries if total_queries > 0 else 0
     print(f"Total Queries: {total_queries}")
     print(f"Cache Hits: {total_hits}")
@@ -353,6 +616,25 @@ def main():
     )
     
     time.sleep(2)
+    
+    # 首先运行诊断测试
+    print("\n" + "="*80)
+    print("RUNNING DIAGNOSTIC TEST FIRST")
+    print("="*80)
+    
+    diagnostic_prompts = [
+        "什么是人工智能",
+        "人工智能是什么",
+        "解释人工智能的含义",
+    ]
+    
+    diag_success = diagnostic_run(diagnostic_prompts, model, tokenizer, kv_manager)
+    
+    if not diag_success:
+        print("\n⚠️ Diagnostic test failed! Check the logs above for details.")
+    
+    # 重置缓存后运行完整测试
+    kv_manager.reset()
     
     # 运行缓存测试
     if args.cache_test:

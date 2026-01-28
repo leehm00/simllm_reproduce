@@ -186,48 +186,90 @@ class InterTaskKVManager:
             
             print(f"[KVManager] Evicted LRU entry: {lru_task_id}")
     
+    def _validate_kv(self, top_layer_kv: Tuple[torch.Tensor, torch.Tensor]) -> Tuple[bool, str]:
+        """
+        Validate KV tensors before saving
+        
+        Returns:
+            (is_valid, reason)
+        """
+        if top_layer_kv is None:
+            return False, "top_layer_kv is None"
+        
+        if not isinstance(top_layer_kv, (tuple, list)) or len(top_layer_kv) != 2:
+            return False, f"top_layer_kv should be tuple of 2, got {type(top_layer_kv)}"
+        
+        key, value = top_layer_kv
+        
+        if key is None or value is None:
+            return False, "key or value is None"
+        
+        # Check shapes
+        if key.dim() < 3 or value.dim() < 3:
+            return False, f"Invalid dimensions: key.dim={key.dim()}, value.dim={value.dim()}"
+        
+        # Check seq_len (shape[2])
+        if key.shape[2] == 0 or value.shape[2] == 0:
+            return False, f"seq_len is 0: key.shape={key.shape}, value.shape={value.shape}"
+        
+        # Check for NaN/Inf
+        if torch.isnan(key).any() or torch.isinf(key).any():
+            return False, "key contains NaN or Inf"
+        
+        if torch.isnan(value).any() or torch.isinf(value).any():
+            return False, "value contains NaN or Inf"
+        
+        return True, "OK"
+    
     def search_similar_task(
         self,
-        query_embedding: torch.Tensor
+        query_embedding: torch.Tensor,
+        task_id: str = "unknown"
     ) -> Optional[TaskCacheEntry]:
         """
         Search for similar cached task using LSH and cosine similarity
         
         Args:
             query_embedding: Task embedding to search for (embedding_dim,)
+            task_id: Task ID for logging
             
         Returns:
             Matched TaskCacheEntry if found, None otherwise
         """
         self.total_queries += 1
         
-        print(f"\n{'='*60}")
-        print(f"[KVManager] Searching for similar task...")
-        print(f"[KVManager] Cache size: {len(self.cache_entries)}, Buckets: {len(self.hash_buckets)}")
+        # Compute query norm
+        query_norm = query_embedding.norm().item()
         
         # Compute LSH hash
         query_emb_np = query_embedding.detach().cpu().numpy().astype(np.float32)
         query_hash = self.lsh_index.compute_hash(query_emb_np)
-        print(f"[KVManager] Query hash: {query_hash}")
+        
+        print(f"\n{'='*70}")
+        print(f"[KVManager] REQUEST: task_id={task_id}, query_hash={query_hash[:12]}..., query_norm={query_norm:.4f}")
+        print(f"[KVManager] Cache size: {len(self.cache_entries)}, Buckets: {len(self.hash_buckets)}")
         
         # Get candidate tasks from same bucket
         candidates = self.hash_buckets.get(query_hash, [])
-        print(f"[KVManager] Candidates in same bucket: {len(candidates)}")
         
-        # Also search in ALL buckets for debugging (can be removed for production)
+        # Also get all candidates for fallback
         all_candidates = []
         for bucket_hash, bucket_entries in self.hash_buckets.items():
             all_candidates.extend(bucket_entries)
-        print(f"[KVManager] Total cached entries: {len(all_candidates)}")
+        
+        # List all candidate task_ids
+        bucket_candidate_ids = [c.task_id for c in candidates]
+        all_candidate_ids = [c.task_id for c in all_candidates]
+        
+        print(f"[KVManager] Bucket candidates: {bucket_candidate_ids}, Total cached entries: {len(all_candidates)}")
         
         # Search in all candidates (not just same bucket) for better hit rate
-        # This is a fallback when LSH bucketing is too strict
         search_candidates = all_candidates if len(candidates) == 0 else candidates
         
         if not search_candidates:
             self.cache_misses += 1
             print(f"[KVManager] ❌ Cache MISS - No candidates available")
-            print(f"{'='*60}\n")
+            print(f"{'='*70}\n")
             return None
         
         # Verify with cosine similarity
@@ -235,8 +277,9 @@ class InterTaskKVManager:
         best_similarity = -1.0
         
         for candidate in search_candidates:
+            candidate_norm = candidate.task_embedding.norm().item()
             similarity = self._cosine_similarity(query_embedding, candidate.task_embedding)
-            print(f"[KVManager]   Candidate {candidate.task_id[:8]}... similarity: {similarity:.4f}")
+            print(f"[KVManager]   Candidate {candidate.task_id} sim={similarity:.4f} norm={candidate_norm:.4f}")
             
             if similarity > best_similarity:
                 best_similarity = similarity
@@ -254,12 +297,12 @@ class InterTaskKVManager:
             
             print(f"[KVManager] ✅ Cache HIT! Similarity: {best_similarity:.4f} >= {self.similarity_threshold}")
             print(f"[KVManager] Matched task: {best_match.task_id}")
-            print(f"{'='*60}\n")
+            print(f"{'='*70}\n")
             return best_match
         else:
             self.cache_misses += 1
             print(f"[KVManager] ❌ Cache MISS. Best similarity: {best_similarity:.4f} < {self.similarity_threshold}")
-            print(f"{'='*60}\n")
+            print(f"{'='*70}\n")
             return None
     
     def add_task(
@@ -267,7 +310,7 @@ class InterTaskKVManager:
         task_id: str,
         task_embedding: torch.Tensor,
         top_layer_kv: Tuple[torch.Tensor, torch.Tensor]
-    ):
+    ) -> bool:
         """
         Add a new task to the cache
         
@@ -275,13 +318,29 @@ class InterTaskKVManager:
             task_id: Unique identifier for the task
             task_embedding: Mean-pooled embedding (embedding_dim,)
             top_layer_kv: (key, value) from last layer
+            
+        Returns:
+            True if task was added successfully, False otherwise
         """
-        print(f"\n{'='*60}")
-        print(f"[KVManager] Adding task to cache...")
-        print(f"[KVManager] Task ID: {task_id}")
-        print(f"[KVManager] Embedding shape: {task_embedding.shape}")
-        if top_layer_kv is not None:
-            print(f"[KVManager] KV shapes: key={top_layer_kv[0].shape}, value={top_layer_kv[1].shape}")
+        # Determine KV info for logging
+        kv_present = top_layer_kv is not None
+        if kv_present and isinstance(top_layer_kv, (tuple, list)) and len(top_layer_kv) == 2:
+            key_shape = top_layer_kv[0].shape if top_layer_kv[0] is not None else None
+            value_shape = top_layer_kv[1].shape if top_layer_kv[1] is not None else None
+        else:
+            key_shape = None
+            value_shape = None
+        
+        print(f"\n{'='*70}")
+        print(f"[KVManager] ADD ATTEMPT: task_id={task_id}, kv_present={kv_present}, key.shape={key_shape}, value.shape={value_shape}")
+        print(f"[KVManager] Embedding shape: {task_embedding.shape}, norm={task_embedding.norm().item():.4f}")
+        
+        # Validate KV
+        is_valid, reason = self._validate_kv(top_layer_kv)
+        if not is_valid:
+            print(f"[KVManager] ⚠️ INVALID KV - Not adding task. Reason: {reason}")
+            print(f"{'='*70}\n")
+            return False
         
         # Check if task already exists
         if task_id in self.cache_entries:
@@ -294,8 +353,9 @@ class InterTaskKVManager:
             self.current_timestamp += 1
             self.cache_entries.move_to_end(task_id)
             print(f"[KVManager] ✅ Task updated successfully")
-            print(f"{'='*60}\n")
-            return
+            print(f"[KVManager] Cache size: {len(self.cache_entries)}. Buckets: {len(self.hash_buckets)}")
+            print(f"{'='*70}\n")
+            return True
         
         # Evict if necessary
         self._evict_lru()
@@ -303,7 +363,7 @@ class InterTaskKVManager:
         # Compute LSH hash
         emb_np = task_embedding.detach().cpu().numpy().astype(np.float32)
         lsh_hash = self.lsh_index.compute_hash(emb_np)
-        print(f"[KVManager] LSH hash: {lsh_hash}")
+        print(f"[KVManager] LSH hash: {lsh_hash[:12]}...")
         
         # Create new entry - clone tensors to avoid reference issues
         entry = TaskCacheEntry(
@@ -323,9 +383,44 @@ class InterTaskKVManager:
             self.hash_buckets[lsh_hash] = []
         self.hash_buckets[lsh_hash].append(entry)
         
-        print(f"[KVManager] ✅ Task added successfully")
-        print(f"[KVManager] Cache size: {len(self.cache_entries)}, Buckets: {len(self.hash_buckets)}")
-        print(f"{'='*60}\n")
+        print(f"[KVManager] ✅ Task added. Cache size: {len(self.cache_entries)}. Buckets: {len(self.hash_buckets)}")
+        print(f"{'='*70}\n")
+        return True
+    
+    def dump_cache_state(self, top_n: int = 10):
+        """
+        Dump current cache state for debugging
+        
+        Args:
+            top_n: Number of entries to show details for
+        """
+        print(f"\n{'='*70}")
+        print(f"[KVManager] CACHE STATE DUMP")
+        print(f"{'='*70}")
+        print(f"Cache size: {len(self.cache_entries)}")
+        print(f"Number of buckets: {len(self.hash_buckets)}")
+        print(f"Total queries: {self.total_queries}")
+        print(f"Cache hits: {self.cache_hits}")
+        print(f"Cache misses: {self.cache_misses}")
+        hit_rate = self.cache_hits / self.total_queries if self.total_queries > 0 else 0.0
+        print(f"Hit rate: {hit_rate:.2%}")
+        
+        # Print bucket info
+        print(f"\nBuckets:")
+        for bucket_hash, entries in self.hash_buckets.items():
+            print(f"  {bucket_hash[:12]}...: {len(entries)} entries")
+        
+        # Print top_n entries
+        print(f"\nTop {top_n} entries:")
+        for i, (task_id, entry) in enumerate(self.cache_entries.items()):
+            if i >= top_n:
+                break
+            key_shape = entry.top_layer_kv[0].shape if entry.top_layer_kv else None
+            value_shape = entry.top_layer_kv[1].shape if entry.top_layer_kv else None
+            print(f"  [{i+1}] task_id={task_id}, timestamp={entry.timestamp}, access_count={entry.access_count}")
+            print(f"       key.shape={key_shape}, value.shape={value_shape}")
+        
+        print(f"{'='*70}\n")
     
     def get_statistics(self) -> Dict:
         """Get cache statistics"""
