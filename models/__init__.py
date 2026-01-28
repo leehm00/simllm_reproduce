@@ -1,97 +1,71 @@
+import os
+
 from .configuration_llama import OptLlamaConfig
 from .modeling_llama_opt import LlamaForCausalLM as OptLlamaForCausalLM
-from .wandb_callback import WandbCallback
+from .modeling_llama_lsh import LlamaForCausalLM as LshLlamaForCausalLM
 
-from .modeling_llama_cla import LlamaForCausalLM as ClaLlamaForCausalLM
-from .configuration_llama import ClaLlamaConfig
+# Inter-Task KV Reuse (Sim-LLM)
+from .inter_task_kv_manager import InterTaskKVManager, LSHIndex, TaskCacheEntry
+from .modeling_llama_inter_task_kv import (
+    LlamaModelWithKVReuse,
+    LlamaForCausalLMWithKVReuse
+)
+from .sim_llm_inference import SimLLMInference, create_sim_llm_inference
 
-from .modeling_llama_opt_group import LlamaForCausalLM as GroupOptLlamaForCausalLM
-from .configuration_llama import GroupOptLlamaConfig
+# Optional imports for modules that may not exist
+try:
+    from .wandb_callback import WandbCallback
+except ImportError:
+    WandbCallback = None
 
+try:
+    from .modeling_llama_cla import LlamaForCausalLM as ClaLlamaForCausalLM
+    from .configuration_llama import ClaLlamaConfig
+    _has_cla = True
+except ImportError:
+    ClaLlamaForCausalLM = None
+    ClaLlamaConfig = None
+    _has_cla = False
+
+try:
+    from .modeling_llama_opt_group import LlamaForCausalLM as GroupOptLlamaForCausalLM
+    from .configuration_llama import GroupOptLlamaConfig
+    _has_group_opt = True
+except ImportError:
+    GroupOptLlamaForCausalLM = None
+    GroupOptLlamaConfig = None
+    _has_group_opt = False
 
 
 from transformers import AutoConfig, AutoModelForCausalLM
+
+# Register OptLlama
 AutoConfig.register("opt-llama", OptLlamaConfig)
 AutoModelForCausalLM.register(OptLlamaConfig, OptLlamaForCausalLM)
-AutoConfig.register("cla-llama", ClaLlamaConfig)
-AutoModelForCausalLM.register(ClaLlamaConfig, ClaLlamaForCausalLM)
-AutoConfig.register("group-opt-llama", GroupOptLlamaConfig)
-AutoModelForCausalLM.register(GroupOptLlamaConfig, GroupOptLlamaForCausalLM)
-AutoModelForCausalLM.register(OptLlamaConfig, OptLlamaForCausalLM)
+
+# Register LshLlama (uses same config as OptLlama)
+# Note: LshLlamaForCausalLM uses OptLlamaConfig
+
+# Register ClaLlama if available
+if _has_cla:
+    AutoConfig.register("cla-llama", ClaLlamaConfig)
+    AutoModelForCausalLM.register(ClaLlamaConfig, ClaLlamaForCausalLM)
+
+# Register GroupOptLlama if available
+if _has_group_opt:
+    AutoConfig.register("group-opt-llama", GroupOptLlamaConfig)
+    AutoModelForCausalLM.register(GroupOptLlamaConfig, GroupOptLlamaForCausalLM)
 
 
-import os
-
+# Fused operations (optional, requires flash_attn)
 if os.environ.get('LCKV_FUSED_RMSNORM', False):
-    import transformers
-    from flash_attn.ops.rms_norm import RMSNorm
-    transformers.models.llama.modeling_llama.LlamaRMSNorm = RMSNorm
-    from . import modeling_llama_opt
-    modeling_llama_opt.LlamaRMSNorm = RMSNorm
-    from . import modeling_llama_cla
-    modeling_llama_cla.LlamaRMSNorm = RMSNorm
-    from . import modeling_llama_opt_group
-    modeling_llama_opt_group.LlamaRMSNorm = RMSNorm
-
-if os.environ.get('LCKV_FUSED_CROSSENTROPY', False):
-    import transformers
-    from flash_attn.losses.cross_entropy import CrossEntropyLoss
-    transformers.models.llama.modeling_llama.CrossEntropyLoss = CrossEntropyLoss
-    from . import modeling_llama_opt
-    modeling_llama_opt.CrossEntropyLoss = CrossEntropyLoss
-    from . import modeling_llama_cla
-    modeling_llama_cla.CrossEntropyLoss = CrossEntropyLoss
-    from . import modeling_llama_opt_group
-    modeling_llama_opt_group.CrossEntropyLoss = CrossEntropyLoss
-
-if os.environ.get('LCKV_FUSED_ROTARY', False):
-    import transformers
-    from .llama_fused_rotary import (
-        LlamaRotaryEmbedding,
-        LlamaLinearScalingRotaryEmbedding,
-        LlamaDynamicNTKScalingRotaryEmbedding,
-        fused_apply_rotary_pos_emb,
-        fused_apply_rotary_pos_emb_q
-    )
-    transformers.models.llama.modeling_llama.apply_rotary_pos_emb = fused_apply_rotary_pos_emb
-    transformers.models.llama.modeling_llama.LlamaRotaryEmbedding = LlamaRotaryEmbedding
-    transformers.models.llama.modeling_llama.LlamaLinearScalingRotaryEmbedding = LlamaLinearScalingRotaryEmbedding
-    transformers.models.llama.modeling_llama.LlamaDynamicNTKScalingRotaryEmbedding = LlamaDynamicNTKScalingRotaryEmbedding
-
-    from . import modeling_llama_opt
-    modeling_llama_opt.apply_rotary_pos_emb = fused_apply_rotary_pos_emb
-    modeling_llama_opt.apply_rotary_pos_emb_q = fused_apply_rotary_pos_emb_q
-
-    # from . import modeling_llama_opt_streaming
-    # modeling_llama_opt_streaming.apply_rotary_pos_emb_q = fused_apply_rotary_pos_emb_q
-
-    from . import modeling_llama_cla
-    modeling_llama_cla.apply_rotary_pos_emb = fused_apply_rotary_pos_emb
-    modeling_llama_cla.apply_rotary_pos_emb_q = fused_apply_rotary_pos_emb_q
-
-    from . import modeling_llama_opt_group
-    modeling_llama_opt_group.apply_rotary_pos_emb = fused_apply_rotary_pos_emb
-    modeling_llama_opt_group.apply_rotary_pos_emb_q = fused_apply_rotary_pos_emb_q
-
-if os.environ.get('LCKV_FUSED_SWIGLU', False):
-    import transformers
-    from .llama_fused_swiglu import LlamaMLP
-    transformers.models.llama.modeling_llama.LlamaMLP = LlamaMLP
-    from . import modeling_llama_opt
-    modeling_llama_opt.LlamaMLP = LlamaMLP
-    from . import modeling_llama_cla
-    modeling_llama_cla.LlamaMLP = LlamaMLP
-    from . import modeling_llama_opt_group
-    modeling_llama_opt_group.LlamaMLP = LlamaMLP
-
-# try:
-#     from streaming_llm import enable_streaming_llm
-#     from .modeling_llama_opt_streaming import enable_streaming_llm as custom_enable_streaming_llm
-#     enable_streaming_llm.enable_streaming_llm = custom_enable_streaming_llm
-#
-#     if os.environ.get('LCKV_FUSED_ROTARY', False):
-#         from .llama_fused_rotary import fused_apply_rotary_pos_emb_q
-#         from streaming_llm.pos_shift import modify_llama
-#         modify_llama.apply_rotary_pos_emb_single = fused_apply_rotary_pos_emb_q
-# except:
-#     pass
+    try:
+        import transformers
+        from flash_attn.ops.rms_norm import RMSNorm
+        transformers.models.llama.modeling_llama.LlamaRMSNorm = RMSNorm
+        from . import modeling_llama_opt
+        modeling_llama_opt.LlamaRMSNorm = RMSNorm
+        from . import modeling_llama_lsh
+        modeling_llama_lsh.LlamaRMSNorm = RMSNorm
+    except ImportError:
+        pass

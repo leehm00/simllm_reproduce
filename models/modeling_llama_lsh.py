@@ -1683,6 +1683,18 @@ class LlamaForCausalLM(_LlamaForCausalLM):
         # Initialize weights and apply final processing
         self.post_init()
 
+    def set_lsh_args(self, threshold, max_kv_size, eviction_mode):
+        """Set LSH-related arguments for KV cache management."""
+        self.kv_manager.threshold = threshold
+        self.kv_manager.max_length = max_kv_size
+        self.kv_manager.eviction_mode = eviction_mode
+        # Reset eviction_idx based on new eviction_mode
+        if eviction_mode == 'FIFO':
+            self.kv_manager.eviction_idx = list(range(self.kv_manager.batch_size))
+        else:
+            # LRU
+            self.kv_manager.eviction_idx = [0] * max_kv_size
+
     def forward(
             self,
             input_ids: torch.LongTensor = None,

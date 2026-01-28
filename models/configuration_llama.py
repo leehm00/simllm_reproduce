@@ -1,7 +1,5 @@
 from transformers.models.llama.configuration_llama import LlamaConfig as _LlamaConfig
 
-from models.kv_manager import KVManager
-
 
 class OptLlamaConfig(_LlamaConfig):
     model_type = 'opt-llama'
