@@ -19,7 +19,7 @@ Max cache size: 100
 Num hyperplanes: 16
 ============================================================
 
-Loading checkpoint shards:   0%|          | 0/4 [00:00<?, ?it/s]Loading checkpoint shards:  25%|██▌       | 1/4 [00:00<00:01,  2.29it/s]Loading checkpoint shards:  50%|█████     | 2/4 [00:00<00:00,  2.32it/s]Loading checkpoint shards:  75%|███████▌  | 3/4 [00:01<00:00,  2.37it/s]Loading checkpoint shards: 100%|██████████| 4/4 [00:01<00:00,  3.19it/s]Loading checkpoint shards: 100%|██████████| 4/4 [00:01<00:00,  2.81it/s]
+Loading checkpoint shards:   0%|          | 0/4 [00:00<?, ?it/s]Loading checkpoint shards:  25%|██▌       | 1/4 [00:00<00:01,  2.31it/s]Loading checkpoint shards:  50%|█████     | 2/4 [00:00<00:00,  2.44it/s]Loading checkpoint shards:  75%|███████▌  | 3/4 [00:01<00:00,  2.51it/s]Loading checkpoint shards: 100%|██████████| 4/4 [00:01<00:00,  3.37it/s]Loading checkpoint shards: 100%|██████████| 4/4 [00:01<00:00,  2.96it/s]
 The attention layers in this model are transitioning from computing the RoPE embeddings internally through `position_ids` (2D tensor with the indexes of the tokens), to using externally computed `position_embeddings` (Tuple of tensors, containing cos and sin). In v4.46 `position_ids` will be removed and `position_embeddings` will be mandatory.
 [LlamaModel] KV Reuse enabled
 ✅ Model loaded successfully!
@@ -136,7 +136,7 @@ Input length: 6 tokens
 
 🤖 Generated Answer: （AI）？
 人工智能（AI）
-⏱️ Latency: 1.212s
+⏱️ Latency: 1.091s
 📊 Cache Hit: False
 
 ======================================================================

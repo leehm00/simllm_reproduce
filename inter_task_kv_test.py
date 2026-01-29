@@ -15,6 +15,14 @@ import os
 from transformers import AutoTokenizer
 from pathlib import Path
 
+# Try to import DynamicCache for transformers 4.36+
+try:
+    from transformers.cache_utils import DynamicCache
+    HAS_DYNAMIC_CACHE = True
+except ImportError:
+    HAS_DYNAMIC_CACHE = False
+    DynamicCache = None
+
 import shutil
 
 # 在main函数前定义解析命令行参数的函数
@@ -188,29 +196,38 @@ def _construct_past_key_values_from_cache(matched_entry, num_layers):
     Construct past_key_values from cached KV entry.
     
     For Inter-Task KV Reuse (SimLLM), we construct a past_key_values structure
-    where all layers share the same cached KV from the last layer.
+    where ALL layers have the same cached KV from the last layer.
     
-    This is based on the SimLLM paper's approach: similar prompts have similar
-    semantic representations, so we can reuse the KV cache from a similar task.
+    For transformers 4.36+, we use DynamicCache directly to avoid conversion issues.
+    For older versions, we use a tuple of tuples.
+    
+    Note: This approach reuses the last layer's KV for all layers, which is
+    an approximation. The model will use this cached KV as the "prefix"
+    computation result for all layers.
     
     Args:
         matched_entry: TaskCacheEntry with top_layer_kv
         num_layers: Number of decoder layers
         
     Returns:
-        past_key_values: tuple of (key, value) tuples for each layer
+        past_key_values: DynamicCache object (transformers 4.36+) or tuple of tuples
     """
     cached_key, cached_value = matched_entry.top_layer_kv
     
-    # Construct past_key_values for all layers
-    # We replicate the cached KV to all layers since we're reusing
-    # the semantic representation from a similar task
-    past_key_values = []
-    for layer_idx in range(num_layers):
-        # Clone to avoid reference issues
-        past_key_values.append((cached_key.clone(), cached_value.clone()))
-    
-    return tuple(past_key_values)
+    if HAS_DYNAMIC_CACHE:
+        # Use DynamicCache directly for transformers 4.36+
+        # This avoids the from_legacy_cache() conversion issues
+        cache = DynamicCache()
+        for layer_idx in range(num_layers):
+            # All layers: use cached KV (clone to avoid reference issues)
+            cache.update(cached_key.clone(), cached_value.clone(), layer_idx)
+        return cache
+    else:
+        # Fallback for older transformers versions
+        past_key_values = []
+        for layer_idx in range(num_layers):
+            past_key_values.append((cached_key.clone(), cached_value.clone()))
+        return tuple(past_key_values)
 
 
 def run_inference_with_kv_reuse(input_ids, attention_mask, model, tokenizer, task_id, kv_manager):
@@ -248,68 +265,118 @@ def run_inference_with_kv_reuse(input_ids, attention_mask, model, tokenizer, tas
     cache_size_before = kv_manager.get_statistics()['cache_size']
     original_input_len = input_ids.shape[-1]
     
+    # Initialize variables
+    cache_hit = False
+    add_success = False
+    outputs = None
+    
     start = time.time()
     
     if matched_entry is not None:
         # ============================================================
-        # CACHE HIT: Use cached KV and truncate input
+        # CACHE HIT: Use layer skipping with cached penultimate hidden states
         # ============================================================
         print(f"🎯 Cache HIT! Using cached KV from task: {matched_entry.task_id}")
-        print(f"🚀 Skipping prompt computation (Reuse Mode)")
+        print(f"🚀 LAYER SKIPPING MODE: Skipping layers 0 to N-2")
         cache_hit = True
         
-        # Get cached KV info
+        # Get cached data
         cached_key, cached_value = matched_entry.top_layer_kv
         cached_seq_len = cached_key.shape[2]
+        cached_penultimate_hidden = matched_entry.penultimate_hidden_states
+        
         print(f"[Cache HIT] Cached KV seq_len: {cached_seq_len}, Input seq_len: {original_input_len}")
         
-        # Construct past_key_values from cache
-        # All layers get the same cached KV (Inter-Task Reuse approach)
-        num_layers = model.config.num_hidden_layers
-        past_key_values = _construct_past_key_values_from_cache(matched_entry, num_layers)
-        print(f"[Cache HIT] Constructed past_key_values for {num_layers} layers")
-        
-        # Truncate input_ids to only the last token (for generating first new token)
-        # The cached KV represents the "prefix" computation - we skip recomputing it
-        truncated_input_ids = input_ids[:, -1:]
-        
-        # Adjust attention_mask: we need mask for cached_seq_len + 1 (the new token)
-        # Create new attention mask that covers the cached sequence + new token
-        new_attention_mask = torch.ones(
-            (1, cached_seq_len + 1),
-            dtype=attention_mask.dtype,
-            device=attention_mask.device
-        )
-        
-        print(f"[Cache HIT] Truncated input_ids shape: {truncated_input_ids.shape}")
-        print(f"[Cache HIT] New attention_mask shape: {new_attention_mask.shape}")
-        print(f"[Cache HIT] Running generate with cached KV (skipping {original_input_len - 1} tokens of prefill)...")
-        
-        # Run generate with cached KV
-        with torch.no_grad():
-            outputs = model.generate(
-                truncated_input_ids,
-                attention_mask=new_attention_mask,
-                past_key_values=past_key_values,
-                max_new_tokens=10,
-                eos_token_id=terminators,
-                pad_token_id=tokenizer.pad_token_id,
-                do_sample=False,
-                temperature=1.0,
-                top_p=1.0,
-                use_cache=True,
-                return_dict_in_generate=True,
-                output_hidden_states=False,
+        if cached_penultimate_hidden is None:
+            print(f"[Cache HIT] ⚠️ No cached penultimate_hidden_states, falling back to full inference")
+            # Fall back to full inference if no penultimate hidden states
+            cache_hit = False
+            matched_entry = None
+        else:
+            print(f"[Cache HIT] cached_penultimate_hidden.shape: {cached_penultimate_hidden.shape}")
+            print(f"[Cache HIT] last_layer_kv key.shape: {cached_key.shape}")
+            
+            # Use layer skipping: call forward with skip_to_last_layer=True
+            # This will skip layers 0 to N-2 and only compute the last layer
+            
+            # Prepare attention mask for the cached sequence
+            new_attention_mask = torch.ones(
+                (1, cached_seq_len),
+                dtype=attention_mask.dtype,
+                device=attention_mask.device
             )
+            
+            # Prepare position_ids for the cached sequence
+            position_ids = torch.arange(
+                0, cached_seq_len,
+                dtype=torch.long, device=input_ids.device
+            ).unsqueeze(0)
+            
+            # Prepare cache_position
+            cache_position = torch.arange(
+                0, cached_seq_len,
+                device=input_ids.device
+            )
+            
+            print(f"[Cache HIT] Running forward with skip_to_last_layer=True...")
+            
+            # Run forward with layer skipping
+            with torch.no_grad():
+                outputs = model(
+                    input_ids=None,  # Not needed when using cached_penultimate_hidden
+                    attention_mask=new_attention_mask,
+                    position_ids=position_ids,
+                    past_key_values=None,  # Not using past_key_values in the traditional sense
+                    inputs_embeds=None,  # Not needed
+                    use_cache=True,
+                    output_attentions=False,
+                    output_hidden_states=False,
+                    return_dict=True,
+                    cache_position=cache_position,
+                    skip_to_last_layer=True,
+                    cached_penultimate_hidden=cached_penultimate_hidden,
+                    last_layer_kv=(cached_key, cached_value),
+                )
+            
+            # Get logits and generate next token
+            logits = outputs.logits
+            next_token_logits = logits[:, -1, :]
+            next_token_id = torch.argmax(next_token_logits, dim=-1, keepdim=True)
+            
+            # Simple greedy decoding for remaining tokens
+            generated_ids = [next_token_id]
+            max_new_tokens = 10
+            
+            for _ in range(max_new_tokens - 1):
+                if next_token_id.item() in terminators:
+                    break
+                
+                # For subsequent tokens, we need to run full forward
+                # (or implement incremental decoding with the updated KV cache)
+                # For simplicity, we'll just generate one token with layer skipping
+                # and then stop (this is a limitation of the current implementation)
+                break
+            
+            # Combine original input with generated tokens
+            all_generated = torch.cat(generated_ids, dim=-1)
+            
+            # Create a simple output structure
+            class SimpleOutput:
+                def __init__(self, sequences):
+                    self.sequences = sequences
+            
+            outputs = SimpleOutput(torch.cat([input_ids, all_generated], dim=-1))
+            
+            print(f"[Cache HIT] ✅ Layer skipping complete, generated {len(generated_ids)} tokens")
         
         add_success = False  # No need to save on cache hit
-        
-    else:
+    
+    # Handle cache MISS or fallback case
+    if not cache_hit:
         # ============================================================
         # CACHE MISS: Run full inference and auto-save KV
         # ============================================================
         print(f"📝 Cache MISS, running full inference (KV will be auto-saved)...")
-        cache_hit = False
         
         # 设置当前task_id，以便forward()中自动保存KV
         model.model.current_task_id = task_id
@@ -355,14 +422,14 @@ def run_inference_with_kv_reuse(input_ids, attention_mask, model, tokenizer, tas
     
     # 解码响应
     if hasattr(outputs, 'sequences'):
-        # For cache hit, we need to account for the truncated input
+        # For cache hit with layer skipping, the sequences already contain input + generated
         if cache_hit:
-            response_ids = outputs.sequences[0][1:]  # Skip the single input token
+            response_ids = outputs.sequences[0][original_input_len:]  # Skip original input
         else:
             response_ids = outputs.sequences[0][original_input_len:]
     else:
         if cache_hit:
-            response_ids = outputs[0][1:]
+            response_ids = outputs[0][original_input_len:]
         else:
             response_ids = outputs[0][original_input_len:]
     

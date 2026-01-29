@@ -64,7 +64,8 @@ class TaskCacheEntry:
         task_embedding: torch.Tensor,
         lsh_hash: str,
         top_layer_kv: Tuple[torch.Tensor, torch.Tensor],
-        timestamp: int
+        timestamp: int,
+        penultimate_hidden_states: Optional[torch.Tensor] = None
     ):
         """
         Args:
@@ -73,6 +74,7 @@ class TaskCacheEntry:
             lsh_hash: LSH hash of the embedding
             top_layer_kv: (key, value) tensors from last layer
             timestamp: Access timestamp for LRU
+            penultimate_hidden_states: Hidden states from layer N-2 (for layer skipping)
         """
         self.task_id = task_id
         self.task_embedding = task_embedding  # (embedding_dim,)
@@ -80,6 +82,7 @@ class TaskCacheEntry:
         self.top_layer_kv = top_layer_kv  # (key, value) each (batch, num_heads, seq_len, head_dim)
         self.timestamp = timestamp
         self.access_count = 1
+        self.penultimate_hidden_states = penultimate_hidden_states  # (batch, seq_len, hidden_dim)
 
 
 class InterTaskKVManager:
@@ -309,7 +312,8 @@ class InterTaskKVManager:
         self,
         task_id: str,
         task_embedding: torch.Tensor,
-        top_layer_kv: Tuple[torch.Tensor, torch.Tensor]
+        top_layer_kv: Tuple[torch.Tensor, torch.Tensor],
+        penultimate_hidden_states: Optional[torch.Tensor] = None
     ) -> bool:
         """
         Add a new task to the cache
@@ -318,6 +322,7 @@ class InterTaskKVManager:
             task_id: Unique identifier for the task
             task_embedding: Mean-pooled embedding (embedding_dim,)
             top_layer_kv: (key, value) from last layer
+            penultimate_hidden_states: Hidden states from layer N-2 (for layer skipping)
             
         Returns:
             True if task was added successfully, False otherwise
@@ -331,9 +336,12 @@ class InterTaskKVManager:
             key_shape = None
             value_shape = None
         
+        penult_shape = penultimate_hidden_states.shape if penultimate_hidden_states is not None else None
+        
         print(f"\n{'='*70}")
         print(f"[KVManager] ADD ATTEMPT: task_id={task_id}, kv_present={kv_present}, key.shape={key_shape}, value.shape={value_shape}")
         print(f"[KVManager] Embedding shape: {task_embedding.shape}, norm={task_embedding.norm().item():.4f}")
+        print(f"[KVManager] Penultimate hidden states shape: {penult_shape}")
         
         # Validate KV
         is_valid, reason = self._validate_kv(top_layer_kv)
@@ -349,6 +357,7 @@ class InterTaskKVManager:
             entry = self.cache_entries[task_id]
             entry.task_embedding = task_embedding.detach().clone()
             entry.top_layer_kv = (top_layer_kv[0].detach().clone(), top_layer_kv[1].detach().clone())
+            entry.penultimate_hidden_states = penultimate_hidden_states.detach().clone() if penultimate_hidden_states is not None else None
             entry.timestamp = self.current_timestamp
             self.current_timestamp += 1
             self.cache_entries.move_to_end(task_id)
@@ -371,7 +380,8 @@ class InterTaskKVManager:
             task_embedding=task_embedding.detach().clone(),
             lsh_hash=lsh_hash,
             top_layer_kv=(top_layer_kv[0].detach().clone(), top_layer_kv[1].detach().clone()),
-            timestamp=self.current_timestamp
+            timestamp=self.current_timestamp,
+            penultimate_hidden_states=penultimate_hidden_states.detach().clone() if penultimate_hidden_states is not None else None
         )
         self.current_timestamp += 1
         

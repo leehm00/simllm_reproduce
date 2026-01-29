@@ -24,6 +24,14 @@ from transformers.models.llama.modeling_llama import (
 )
 from transformers.utils import add_start_docstrings_to_model_forward
 
+# Import DynamicCache for transformers 4.36+ compatibility
+try:
+    from transformers.cache_utils import DynamicCache
+    HAS_DYNAMIC_CACHE = True
+except ImportError:
+    HAS_DYNAMIC_CACHE = False
+    DynamicCache = None
+
 from .inter_task_kv_manager import InterTaskKVManager, TaskCacheEntry
 
 
@@ -220,14 +228,20 @@ class LlamaModelWithKVReuse(_LlamaModel):
         cache_position: Optional[torch.LongTensor] = None,
         task_id: Optional[str] = None,
         reuse_kv: bool = False,
+        skip_to_last_layer: bool = False,
+        cached_penultimate_hidden: Optional[torch.FloatTensor] = None,
+        last_layer_kv: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         **kwargs,
     ) -> Union[Tuple, BaseModelOutputWithPast]:
         """
-        Forward pass with optional KV reuse
+        Forward pass with optional KV reuse and layer skipping
         
         Args:
             task_id: Unique identifier for the current task
             reuse_kv: Whether to attempt KV reuse for this forward pass
+            skip_to_last_layer: If True, skip layers 0 to N-2 and only compute last layer
+            cached_penultimate_hidden: Cached hidden states from layer N-2 (required if skip_to_last_layer=True)
+            last_layer_kv: Cached (key, value) for the last layer (required if skip_to_last_layer=True)
         """
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
@@ -235,9 +249,21 @@ class LlamaModelWithKVReuse(_LlamaModel):
         )
         use_cache = use_cache if use_cache is not None else self.config.use_cache
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+        
+        # IMPORTANT: Force use_cache=True when KV reuse is enabled and we have a task_id
+        # This ensures we always capture KV for potential reuse
+        effective_task_id = task_id if task_id is not None else self.current_task_id
+        if self.enable_kv_reuse and effective_task_id is not None:
+            use_cache = True
+            print(f"[LlamaModel] Forcing use_cache=True for task {effective_task_id}")
 
         # Retrieve input_ids and inputs_embeds
-        if input_ids is not None and inputs_embeds is not None:
+        # Special case: skip_to_last_layer mode uses cached_penultimate_hidden instead
+        if skip_to_last_layer and cached_penultimate_hidden is not None:
+            batch_size, seq_length = cached_penultimate_hidden.shape[:2]
+            # In skip mode, we don't need input_ids or inputs_embeds
+            inputs_embeds = None  # Will be set to cached_penultimate_hidden later
+        elif input_ids is not None and inputs_embeds is not None:
             raise ValueError("You cannot specify both input_ids and inputs_embeds at the same time")
         elif input_ids is not None:
             batch_size, seq_length = input_ids.shape[:2]
@@ -256,7 +282,13 @@ class LlamaModelWithKVReuse(_LlamaModel):
         # ============================================================
         # EMBEDDING COMPUTATION
         # ============================================================
-        if inputs_embeds is None:
+        # In skip_to_last_layer mode, we use cached_penultimate_hidden directly
+        # and don't need to compute embeddings
+        if skip_to_last_layer and cached_penultimate_hidden is not None:
+            # inputs_embeds is not needed in skip mode, but we set it for compatibility
+            # with later code that might reference it
+            inputs_embeds = cached_penultimate_hidden  # Use as placeholder for device reference
+        elif inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
         
         # NOTE: KV reuse is now handled externally by the test script.
@@ -331,74 +363,238 @@ class LlamaModelWithKVReuse(_LlamaModel):
                 )
                 use_cache = False
 
+        # Prepare cache_position for transformers 4.36+ compatibility
+        # This is CRITICAL for KV caching to work properly
+        device = input_ids.device if input_ids is not None else inputs_embeds.device
+        if cache_position is None:
+            cache_position = torch.arange(
+                past_key_values_length, past_key_values_length + seq_length, device=device
+            )
+        
+        # ============================================================
+        # PREPARE CACHE OBJECT (DynamicCache for transformers 4.36+)
+        # ============================================================
+        # In transformers 4.36+, decoder layers expect a DynamicCache object
+        # We need to create one and populate it with any existing past_key_values
+        use_dynamic_cache = HAS_DYNAMIC_CACHE and use_cache
+        dynamic_cache = None
+        
+        if use_dynamic_cache:
+            dynamic_cache = DynamicCache()
+            # If we have past_key_values (from cache HIT), populate the DynamicCache
+            if past_key_values is not None:
+                for layer_idx, layer_kv in enumerate(past_key_values):
+                    if layer_kv is not None and isinstance(layer_kv, tuple) and len(layer_kv) == 2:
+                        key, value = layer_kv
+                        if key is not None and value is not None:
+                            # DynamicCache.update() expects (key, value, layer_idx)
+                            dynamic_cache.update(key, value, layer_idx)
+            print(f"[LlamaModel] Using DynamicCache, initial length: {dynamic_cache.get_seq_length() if hasattr(dynamic_cache, 'get_seq_length') else 'N/A'}")
+        
         # Decoder layers
         all_hidden_states = () if output_hidden_states else None
         all_self_attns = () if output_attentions else None
-        next_decoder_cache = () if use_cache else None
-
-        for idx, decoder_layer in enumerate(self.layers):
+        next_decoder_cache = [] if use_cache else None  # Use list for easier manipulation
+        
+        # Track penultimate hidden states for layer skipping (SimLLM)
+        penultimate_hidden_states = None
+        
+        # ============================================================
+        # LAYER SKIPPING MODE (SimLLM Inter-Task KV Reuse)
+        # ============================================================
+        # If skip_to_last_layer=True is passed explicitly, use cached_penultimate_hidden
+        # as input to the last layer and skip all previous layers.
+        # This is the true SimLLM layer skipping approach.
+        
+        if skip_to_last_layer:
+            if cached_penultimate_hidden is None:
+                raise ValueError("skip_to_last_layer=True requires cached_penultimate_hidden")
+            if last_layer_kv is None:
+                raise ValueError("skip_to_last_layer=True requires last_layer_kv")
+            
+            print(f"[LlamaModel] 🚀 LAYER SKIPPING MODE: Using cached penultimate hidden states")
+            print(f"[LlamaModel]    cached_penultimate_hidden.shape: {cached_penultimate_hidden.shape}")
+            print(f"[LlamaModel]    last_layer_kv key.shape: {last_layer_kv[0].shape}")
+            
+            # Use cached penultimate hidden states as input to the last layer
+            hidden_states = cached_penultimate_hidden
+            
+            # Skip all layers except the last one
+            for idx in range(len(self.layers) - 1):
+                if output_hidden_states:
+                    all_hidden_states += (hidden_states,)
+                if use_cache:
+                    next_decoder_cache.append(None)
+            
+            # Process only the last layer
+            last_layer_idx = len(self.layers) - 1
+            decoder_layer = self.layers[last_layer_idx]
+            
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
-
-            # Defensive access to past_key_values
-            try:
-                past_key_value = past_key_values[idx] if past_key_values is not None else None
-            except (KeyError, IndexError, TypeError) as e:
-                past_key_value = None
-
-            if self.gradient_checkpointing and self.training:
-                def create_custom_forward(module):
-                    def custom_forward(*inputs):
-                        return module(*inputs, output_attentions, None)
-                    return custom_forward
-
-                layer_outputs = torch.utils.checkpoint.checkpoint(
-                    create_custom_forward(decoder_layer),
+            
+            # Save penultimate hidden states (already have it from cache)
+            penultimate_hidden_states = hidden_states.clone()
+            
+            # Prepare the cached KV for the last layer
+            # For DynamicCache, we need to populate it with the cached KV
+            if use_dynamic_cache:
+                # Update DynamicCache with the cached KV for the last layer
+                dynamic_cache.update(last_layer_kv[0], last_layer_kv[1], last_layer_idx)
+                
+                layer_outputs = decoder_layer(
                     hidden_states,
-                    attention_mask,
-                    position_ids,
-                    None,
+                    attention_mask=attention_mask,
+                    position_ids=position_ids,
+                    past_key_value=dynamic_cache,
+                    output_attentions=output_attentions,
+                    use_cache=use_cache,
+                    cache_position=cache_position,
                 )
             else:
                 layer_outputs = decoder_layer(
                     hidden_states,
                     attention_mask=attention_mask,
                     position_ids=position_ids,
-                    past_key_value=past_key_value,
+                    past_key_value=last_layer_kv,
                     output_attentions=output_attentions,
                     use_cache=use_cache,
+                    cache_position=cache_position,
                 )
-
+            
             hidden_states = layer_outputs[0]
-
+            
             if use_cache:
-                # Extract present_key_value from layer outputs
-                # The index depends on output_attentions:
-                # - If output_attentions=False: layer_outputs = (hidden_states, present_kv)
-                # - If output_attentions=True: layer_outputs = (hidden_states, attn_weights, present_kv)
                 present_kv_idx = 2 if output_attentions else 1
-                
-                # Handle different return types from decoder layer
                 if len(layer_outputs) > present_kv_idx:
                     present_kv = layer_outputs[present_kv_idx]
                 else:
                     present_kv = None
                 
-                # Debug logging for first and last layer
-                if idx == 0 or idx == len(self.layers) - 1:
-                    if present_kv is not None:
-                        if isinstance(present_kv, tuple) and len(present_kv) == 2:
-                            k, v = present_kv
-                            print(f"[LlamaModel] Layer {idx} KV: key.shape={k.shape if k is not None else None}")
-                        else:
-                            print(f"[LlamaModel] Layer {idx} present_kv type: {type(present_kv).__name__}")
-                    else:
-                        print(f"[LlamaModel] Layer {idx} present_kv is None (layer_outputs len={len(layer_outputs)})")
+                if use_dynamic_cache and present_kv is dynamic_cache:
+                    try:
+                        if hasattr(dynamic_cache, 'key_cache') and len(dynamic_cache.key_cache) > last_layer_idx:
+                            key = dynamic_cache.key_cache[last_layer_idx]
+                            value = dynamic_cache.value_cache[last_layer_idx]
+                            present_kv = (key, value)
+                    except Exception as e:
+                        print(f"[LlamaModel] Warning: Failed to extract KV from DynamicCache: {e}")
+                        present_kv = None
                 
-                next_decoder_cache += (present_kv,)
-
+                next_decoder_cache.append(present_kv)
+            
             if output_attentions:
                 all_self_attns += (layer_outputs[1],)
+            
+            print(f"[LlamaModel] ✅ Layer skipping complete: Only computed layer {last_layer_idx}")
+        
+        else:
+            # ============================================================
+            # NORMAL MODE: Process all layers
+            # ============================================================
+            for idx, decoder_layer in enumerate(self.layers):
+                if output_hidden_states:
+                    all_hidden_states += (hidden_states,)
+                
+                # Save penultimate hidden states (layer N-2 output) for potential caching
+                if idx == len(self.layers) - 1:
+                    penultimate_hidden_states = hidden_states.clone()
+
+                if self.gradient_checkpointing and self.training:
+                    def create_custom_forward(module):
+                        def custom_forward(*inputs):
+                            return module(*inputs, output_attentions, None)
+                        return custom_forward
+
+                    layer_outputs = torch.utils.checkpoint.checkpoint(
+                        create_custom_forward(decoder_layer),
+                        hidden_states,
+                        attention_mask,
+                        position_ids,
+                        None,
+                    )
+                else:
+                    # ============================================================
+                    # CALL DECODER LAYER WITH PROPER CACHE HANDLING
+                    # ============================================================
+                    # For transformers 4.36+, we pass the DynamicCache object
+                    # For older versions, we pass the tuple directly
+                    if use_dynamic_cache:
+                        # Pass DynamicCache object - it handles per-layer KV internally
+                        layer_outputs = decoder_layer(
+                            hidden_states,
+                            attention_mask=attention_mask,
+                            position_ids=position_ids,
+                            past_key_value=dynamic_cache,  # Pass the whole cache object
+                            output_attentions=output_attentions,
+                            use_cache=use_cache,
+                            cache_position=cache_position,
+                        )
+                    else:
+                        # Legacy mode: pass tuple directly
+                        try:
+                            past_key_value = past_key_values[idx] if past_key_values is not None else None
+                        except (KeyError, IndexError, TypeError):
+                            past_key_value = None
+                        
+                        layer_outputs = decoder_layer(
+                            hidden_states,
+                            attention_mask=attention_mask,
+                            position_ids=position_ids,
+                            past_key_value=past_key_value,
+                            output_attentions=output_attentions,
+                            use_cache=use_cache,
+                            cache_position=cache_position,
+                        )
+
+                hidden_states = layer_outputs[0]
+
+                if use_cache:
+                    # Extract present_key_value from layer outputs
+                    # The index depends on output_attentions:
+                    # - If output_attentions=False: layer_outputs = (hidden_states, present_kv)
+                    # - If output_attentions=True: layer_outputs = (hidden_states, attn_weights, present_kv)
+                    present_kv_idx = 2 if output_attentions else 1
+                    
+                    # Handle different return types from decoder layer
+                    if len(layer_outputs) > present_kv_idx:
+                        present_kv = layer_outputs[present_kv_idx]
+                    else:
+                        present_kv = None
+                    
+                    # For DynamicCache, the cache is updated in-place, so present_kv might be the cache object
+                    # We need to extract the actual KV tuple for this layer
+                    if use_dynamic_cache and present_kv is dynamic_cache:
+                        # Extract KV from DynamicCache for this layer
+                        try:
+                            if hasattr(dynamic_cache, 'key_cache') and len(dynamic_cache.key_cache) > idx:
+                                key = dynamic_cache.key_cache[idx]
+                                value = dynamic_cache.value_cache[idx]
+                                present_kv = (key, value)
+                            else:
+                                present_kv = None
+                        except Exception as e:
+                            print(f"[LlamaModel] Warning: Failed to extract KV from DynamicCache for layer {idx}: {e}")
+                            present_kv = None
+                    
+                    # Debug logging for first and last layer
+                    if idx == 0 or idx == len(self.layers) - 1:
+                        if present_kv is not None:
+                            if isinstance(present_kv, tuple) and len(present_kv) == 2:
+                                k, v = present_kv
+                                if k is not None:
+                                    print(f"[LlamaModel] Layer {idx} KV: key.shape={k.shape}")
+                                else:
+                                    print(f"[LlamaModel] Layer {idx} KV: key is None")
+                            else:
+                                print(f"[LlamaModel] Layer {idx} present_kv type: {type(present_kv).__name__}")
+                        else:
+                            print(f"[LlamaModel] Layer {idx} present_kv is None (layer_outputs len={len(layer_outputs)})")
+                    
+                    next_decoder_cache.append(present_kv)
+
+                if output_attentions:
+                    all_self_attns += (layer_outputs[1],)
 
         hidden_states = self.norm(hidden_states)
 
@@ -406,7 +602,31 @@ class LlamaModelWithKVReuse(_LlamaModel):
         if output_hidden_states:
             all_hidden_states += (hidden_states,)
 
-        next_cache = next_decoder_cache if use_cache else None
+        # Convert next_decoder_cache list to tuple for compatibility
+        # Also handle DynamicCache extraction if needed
+        next_cache = None
+        if use_cache:
+            if use_dynamic_cache and dynamic_cache is not None:
+                # Extract KV tuples from DynamicCache for all layers
+                extracted_cache = []
+                for layer_idx in range(len(self.layers)):
+                    try:
+                        if hasattr(dynamic_cache, 'key_cache') and len(dynamic_cache.key_cache) > layer_idx:
+                            key = dynamic_cache.key_cache[layer_idx]
+                            value = dynamic_cache.value_cache[layer_idx]
+                            if key is not None and value is not None:
+                                extracted_cache.append((key, value))
+                            else:
+                                extracted_cache.append(None)
+                        else:
+                            extracted_cache.append(None)
+                    except Exception as e:
+                        print(f"[LlamaModel] Warning: Failed to extract KV from DynamicCache for layer {layer_idx}: {e}")
+                        extracted_cache.append(None)
+                next_cache = tuple(extracted_cache)
+                print(f"[LlamaModel] Extracted {sum(1 for x in next_cache if x is not None)} non-None KV pairs from DynamicCache")
+            elif next_decoder_cache is not None:
+                next_cache = tuple(next_decoder_cache)
         
         # ============================================================
         # SAVE TO CACHE (if this was a cache miss during prefill)
@@ -456,11 +676,12 @@ class LlamaModelWithKVReuse(_LlamaModel):
                 # Compute task embedding
                 task_embedding = self.kv_manager._compute_task_embedding(inputs_embeds)
                 
-                # Add to cache
+                # Add to cache with penultimate hidden states for layer skipping
                 add_success = self.kv_manager.add_task(
                     task_id=effective_task_id,
                     task_embedding=task_embedding,
-                    top_layer_kv=last_layer_kv
+                    top_layer_kv=last_layer_kv,
+                    penultimate_hidden_states=penultimate_hidden_states
                 )
                 if add_success:
                     print(f"[LlamaModel] ✅ Auto-saved KV for task {effective_task_id} (kv_seq_len={last_layer_kv[0].shape[2]}, input_seq_len={actual_seq_len})")
@@ -525,15 +746,21 @@ class LlamaForCausalLMWithKVReuse(_LlamaForCausalLM):
         cache_position: Optional[torch.LongTensor] = None,
         task_id: Optional[str] = None,
         reuse_kv: bool = False,
+        skip_to_last_layer: bool = False,
+        cached_penultimate_hidden: Optional[torch.FloatTensor] = None,
+        last_layer_kv: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         **kwargs,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         """
-        Forward pass with optional KV reuse
+        Forward pass with optional KV reuse and layer skipping
         
         Args:
             task_id: Unique identifier for the current task
             reuse_kv: Whether to attempt KV reuse for this forward pass
             cache_position: Position indices for cache (transformers 4.36+)
+            skip_to_last_layer: If True, skip layers 0 to N-2 and only compute last layer
+            cached_penultimate_hidden: Cached hidden states from layer N-2 (required if skip_to_last_layer=True)
+            last_layer_kv: Cached (key, value) for the last layer (required if skip_to_last_layer=True)
         """
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
@@ -555,6 +782,9 @@ class LlamaForCausalLMWithKVReuse(_LlamaForCausalLM):
             cache_position=cache_position,
             task_id=task_id,
             reuse_kv=reuse_kv,
+            skip_to_last_layer=skip_to_last_layer,
+            cached_penultimate_hidden=cached_penultimate_hidden,
+            last_layer_kv=last_layer_kv,
         )
 
         hidden_states = outputs[0]
@@ -590,6 +820,75 @@ class LlamaForCausalLMWithKVReuse(_LlamaForCausalLM):
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
         )
+    
+    def prepare_inputs_for_generation(
+        self,
+        input_ids,
+        past_key_values=None,
+        attention_mask=None,
+        inputs_embeds=None,
+        cache_position=None,
+        position_ids=None,
+        use_cache=True,
+        **kwargs,
+    ):
+        """
+        Prepare inputs for generation, handling DynamicCache properly.
+        
+        This override ensures that DynamicCache objects are passed through correctly
+        without being converted or processed incorrectly.
+        """
+        # If past_key_values is a DynamicCache, get its length
+        past_length = 0
+        if past_key_values is not None:
+            if HAS_DYNAMIC_CACHE and isinstance(past_key_values, DynamicCache):
+                # DynamicCache object - get sequence length
+                past_length = past_key_values.get_seq_length()
+            elif isinstance(past_key_values, (list, tuple)):
+                # Legacy format - get length from first non-None entry
+                for layer_kv in past_key_values:
+                    if layer_kv is not None and isinstance(layer_kv, tuple) and len(layer_kv) >= 2:
+                        if layer_kv[0] is not None:
+                            past_length = layer_kv[0].shape[2]
+                            break
+        
+        # Only use the last token if we have past_key_values
+        if past_key_values is not None and past_length > 0:
+            # Only keep the last token for generation
+            input_ids = input_ids[:, -1:]
+        
+        # Prepare position_ids
+        if position_ids is None:
+            if attention_mask is not None:
+                # Create position_ids from attention_mask
+                position_ids = attention_mask.long().cumsum(-1) - 1
+                position_ids.masked_fill_(attention_mask == 0, 1)
+                if past_key_values is not None and past_length > 0:
+                    position_ids = position_ids[:, -input_ids.shape[1]:]
+            else:
+                # Simple position_ids
+                position_ids = torch.arange(
+                    past_length, past_length + input_ids.shape[1],
+                    dtype=torch.long, device=input_ids.device
+                ).unsqueeze(0)
+        
+        # Prepare cache_position
+        if cache_position is None:
+            cache_position = torch.arange(
+                past_length, past_length + input_ids.shape[1],
+                device=input_ids.device
+            )
+        
+        model_inputs = {
+            "input_ids": input_ids,
+            "position_ids": position_ids,
+            "cache_position": cache_position,
+            "past_key_values": past_key_values,
+            "use_cache": use_cache,
+            "attention_mask": attention_mask,
+        }
+        
+        return model_inputs
     
     def generate_with_kv_reuse(
         self,
