@@ -19,7 +19,7 @@ Max cache size: 100
 Num hyperplanes: 16
 ============================================================
 
-Loading checkpoint shards:   0%|          | 0/4 [00:00<?, ?it/s]Loading checkpoint shards:  25%|██▌       | 1/4 [00:00<00:01,  2.31it/s]Loading checkpoint shards:  50%|█████     | 2/4 [00:00<00:00,  2.44it/s]Loading checkpoint shards:  75%|███████▌  | 3/4 [00:01<00:00,  2.51it/s]Loading checkpoint shards: 100%|██████████| 4/4 [00:01<00:00,  3.37it/s]Loading checkpoint shards: 100%|██████████| 4/4 [00:01<00:00,  2.96it/s]
+Loading checkpoint shards:   0%|          | 0/4 [00:00<?, ?it/s]Loading checkpoint shards:  25%|██▌       | 1/4 [00:00<00:01,  2.38it/s]Loading checkpoint shards:  50%|█████     | 2/4 [00:00<00:00,  2.45it/s]Loading checkpoint shards:  75%|███████▌  | 3/4 [00:01<00:00,  2.45it/s]Loading checkpoint shards: 100%|██████████| 4/4 [00:01<00:00,  3.28it/s]Loading checkpoint shards: 100%|██████████| 4/4 [00:01<00:00,  2.91it/s]
 The attention layers in this model are transitioning from computing the RoPE embeddings internally through `position_ids` (2D tensor with the indexes of the tokens), to using externally computed `position_embeddings` (Tuple of tensors, containing cos and sin). In v4.46 `position_ids` will be removed and `position_embeddings` will be mandatory.
 [LlamaModel] KV Reuse enabled
 ✅ Model loaded successfully!
@@ -136,7 +136,7 @@ Input length: 6 tokens
 
 🤖 Generated Answer: （AI）？
 人工智能（AI）
-⏱️ Latency: 1.091s
+⏱️ Latency: 1.153s
 📊 Cache Hit: False
 
 ======================================================================
@@ -182,25 +182,791 @@ Input length: 5 tokens
 [Cache HIT] cached_penultimate_hidden.shape: torch.Size([1, 6, 4096])
 [Cache HIT] last_layer_kv key.shape: torch.Size([1, 8, 6, 128])
 [Cache HIT] Running forward with skip_to_last_layer=True...
-Traceback (most recent call last):
-  File "/home/homie/SimLLM/inter_task_kv_test.py", line 728, in <module>
-    main()
-  File "/home/homie/SimLLM/inter_task_kv_test.py", line 698, in main
-    diag_success = diagnostic_run(diagnostic_prompts, model, tokenizer, kv_manager)
-  File "/home/homie/SimLLM/inter_task_kv_test.py", line 491, in diagnostic_run
-    latency, response, cache_hit, add_success = run_inference_with_kv_reuse(
-  File "/home/homie/SimLLM/inter_task_kv_test.py", line 325, in run_inference_with_kv_reuse
-    outputs = model(
-  File "/home/homie/.conda/envs/simllm/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1553, in _wrapped_call_impl
-    return self._call_impl(*args, **kwargs)
-  File "/home/homie/.conda/envs/simllm/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1562, in _call_impl
-    return forward_call(*args, **kwargs)
-  File "/home/homie/SimLLM/models/modeling_llama_inter_task_kv.py", line 761, in forward
-    outputs = self.model(
-  File "/home/homie/.conda/envs/simllm/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1553, in _wrapped_call_impl
-    return self._call_impl(*args, **kwargs)
-  File "/home/homie/.conda/envs/simllm/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1562, in _call_impl
-    return forward_call(*args, **kwargs)
-  File "/home/homie/SimLLM/models/modeling_llama_inter_task_kv.py", line 268, in forward
-    raise ValueError("You have to specify either input_ids or inputs_embeds")
-ValueError: You have to specify either input_ids or inputs_embeds
+[LlamaModel] Using DynamicCache, initial length: 0
+[LlamaModel] 🚀 LAYER SKIPPING MODE: Using cached penultimate hidden states
+[LlamaModel]    cached_penultimate_hidden.shape: torch.Size([1, 6, 4096])
+[LlamaModel]    last_layer_kv key.shape: torch.Size([1, 8, 6, 128])
+[LlamaModel] KV Reuse: Q_len=6, KV_len=6
+[LlamaAttention] KV Reuse Mode: q_len=6, past_kv_len=6
+[LlamaModel] ✅ Layer skipping complete: Only computed layer 31
+[LlamaModel] Extracted 0 non-None KV pairs from DynamicCache
+[Cache HIT] ✅ Layer skipping complete, generated 1 tokens
+
+🤖 Generated Answer: （
+⏱️ Latency: 0.005s
+📊 Cache Hit: True
+
+======================================================================
+[KVManager] CACHE STATE DUMP
+======================================================================
+Cache size: 1
+Number of buckets: 1
+Total queries: 3
+Cache hits: 2
+Cache misses: 1
+Hit rate: 66.67%
+
+Buckets:
+  110001101101...: 1 entries
+
+Top 5 entries:
+  [1] task_id=diag_0, timestamp=2, access_count=3
+       key.shape=torch.Size([1, 8, 6, 128]), value.shape=torch.Size([1, 8, 6, 128])
+======================================================================
+
+======================================================================
+
+
+--- Diagnostic prompt 3/3: '解释人工智能的含义' ---
+
+======================================================================
+Running inference for task: diag_2
+Input length: 9 tokens
+======================================================================
+
+======================================================================
+[KVManager] REQUEST: task_id=diag_2, query_hash=100001101000..., query_norm=0.2247
+[KVManager] Cache size: 1, Buckets: 1
+[KVManager] Bucket candidates: [], Total cached entries: 1
+[KVManager]   Candidate diag_0 sim=0.6396 norm=0.2505
+[KVManager] ❌ Cache MISS. Best similarity: 0.6396 < 0.7
+======================================================================
+
+📝 Cache MISS, running full inference (KV will be auto-saved)...
+[Cache MISS] Set model.model.current_task_id = diag_2
+[LlamaModel] Forcing use_cache=True for task diag_2
+[LlamaModel] Using DynamicCache, initial length: 0
+[LlamaModel] Layer 0 KV: key.shape=torch.Size([1, 8, 9, 128])
+[LlamaModel] Layer 31 KV: key.shape=torch.Size([1, 8, 9, 128])
+[LlamaModel] Extracted 32 non-None KV pairs from DynamicCache
+[LlamaModel] Auto-save check: seq_len=9, task_id=diag_2, use_cache=True
+[LlamaModel] next_cache type: tuple
+[LlamaModel] next_cache length: 32
+[LlamaModel] next_cache[0] type: tuple
+[LlamaModel] next_cache[0][0] (key) type: Tensor, shape: torch.Size([1, 8, 9, 128])
+[LlamaModel] _extract_last_layer_kv: tuple detected, len=32
+[LlamaModel] _extract_last_layer_kv: next_cache[0] key.shape=torch.Size([1, 8, 9, 128])
+[LlamaModel] _extract_last_layer_kv: next_cache[-1] key.shape=torch.Size([1, 8, 9, 128])
+[LlamaModel] _extract_last_layer_kv: Found valid KV at layer 31, key.shape=torch.Size([1, 8, 9, 128])
+
+======================================================================
+[KVManager] ADD ATTEMPT: task_id=diag_2, kv_present=True, key.shape=torch.Size([1, 8, 9, 128]), value.shape=torch.Size([1, 8, 9, 128])
+[KVManager] Embedding shape: torch.Size([4096]), norm=0.2247
+[KVManager] Penultimate hidden states shape: torch.Size([1, 9, 4096])
+[KVManager] LSH hash: 100001101000...
+[KVManager] ✅ Task added. Cache size: 2. Buckets: 2
+======================================================================
+
+[LlamaModel] ✅ Auto-saved KV for task diag_2 (kv_seq_len=9, input_seq_len=9)
+[LlamaModel] Forcing use_cache=True for task diag_2
+[LlamaModel] Using DynamicCache, initial length: 9
+[LlamaModel] Layer 0 KV: key.shape=torch.Size([1, 8, 10, 128])
+[LlamaModel] Layer 31 KV: key.shape=torch.Size([1, 8, 10, 128])
+[LlamaModel] Extracted 32 non-None KV pairs from DynamicCache
+[LlamaModel] Forcing use_cache=True for task diag_2
+[LlamaModel] Using DynamicCache, initial length: 10
+[LlamaModel] Layer 0 KV: key.shape=torch.Size([1, 8, 11, 128])
+[LlamaModel] Layer 31 KV: key.shape=torch.Size([1, 8, 11, 128])
+[LlamaModel] Extracted 32 non-None KV pairs from DynamicCache
+[LlamaModel] Forcing use_cache=True for task diag_2
+[LlamaModel] Using DynamicCache, initial length: 11
+[LlamaModel] Layer 0 KV: key.shape=torch.Size([1, 8, 12, 128])
+[LlamaModel] Layer 31 KV: key.shape=torch.Size([1, 8, 12, 128])
+[LlamaModel] Extracted 32 non-None KV pairs from DynamicCache
+[LlamaModel] Forcing use_cache=True for task diag_2
+[LlamaModel] Using DynamicCache, initial length: 12
+[LlamaModel] Layer 0 KV: key.shape=torch.Size([1, 8, 13, 128])
+[LlamaModel] Layer 31 KV: key.shape=torch.Size([1, 8, 13, 128])
+[LlamaModel] Extracted 32 non-None KV pairs from DynamicCache
+[LlamaModel] Forcing use_cache=True for task diag_2
+[LlamaModel] Using DynamicCache, initial length: 13
+[LlamaModel] Layer 0 KV: key.shape=torch.Size([1, 8, 14, 128])
+[LlamaModel] Layer 31 KV: key.shape=torch.Size([1, 8, 14, 128])
+[LlamaModel] Extracted 32 non-None KV pairs from DynamicCache
+[LlamaModel] Forcing use_cache=True for task diag_2
+[LlamaModel] Using DynamicCache, initial length: 14
+[LlamaModel] Layer 0 KV: key.shape=torch.Size([1, 8, 15, 128])
+[LlamaModel] Layer 31 KV: key.shape=torch.Size([1, 8, 15, 128])
+[LlamaModel] Extracted 32 non-None KV pairs from DynamicCache
+[LlamaModel] Forcing use_cache=True for task diag_2
+[LlamaModel] Using DynamicCache, initial length: 15
+[LlamaModel] Layer 0 KV: key.shape=torch.Size([1, 8, 16, 128])
+[LlamaModel] Layer 31 KV: key.shape=torch.Size([1, 8, 16, 128])
+[LlamaModel] Extracted 32 non-None KV pairs from DynamicCache
+[LlamaModel] Forcing use_cache=True for task diag_2
+[LlamaModel] Using DynamicCache, initial length: 16
+[LlamaModel] Layer 0 KV: key.shape=torch.Size([1, 8, 17, 128])
+[LlamaModel] Layer 31 KV: key.shape=torch.Size([1, 8, 17, 128])
+[LlamaModel] Extracted 32 non-None KV pairs from DynamicCache
+[LlamaModel] Forcing use_cache=True for task diag_2
+[LlamaModel] Using DynamicCache, initial length: 17
+[LlamaModel] Layer 0 KV: key.shape=torch.Size([1, 8, 18, 128])
+[LlamaModel] Layer 31 KV: key.shape=torch.Size([1, 8, 18, 128])
+[LlamaModel] Extracted 32 non-None KV pairs from DynamicCache
+[Auto-Save] ✅ KV auto-saved for task diag_2
+
+======================================================================
+[KVManager] REQUEST: task_id=verify_diag_2, query_hash=100001101000..., query_norm=0.2247
+[KVManager] Cache size: 2, Buckets: 2
+[KVManager] Bucket candidates: ['diag_2'], Total cached entries: 2
+[KVManager]   Candidate diag_2 sim=1.0000 norm=0.2247
+[KVManager] ✅ Cache HIT! Similarity: 1.0000 >= 0.7
+[KVManager] Matched task: diag_2
+======================================================================
+
+[Verify] ✅ Task diag_2 successfully found in cache (matched: diag_2)
+
+🤖 Generated Answer: 
+人工智能（Artificial Intelligence，AI
+⏱️ Latency: 0.405s
+📊 Cache Hit: False
+
+======================================================================
+[KVManager] CACHE STATE DUMP
+======================================================================
+Cache size: 2
+Number of buckets: 2
+Total queries: 5
+Cache hits: 3
+Cache misses: 2
+Hit rate: 60.00%
+
+Buckets:
+  110001101101...: 1 entries
+  100001101000...: 1 entries
+
+Top 5 entries:
+  [1] task_id=diag_0, timestamp=2, access_count=3
+       key.shape=torch.Size([1, 8, 6, 128]), value.shape=torch.Size([1, 8, 6, 128])
+  [2] task_id=diag_2, timestamp=4, access_count=2
+       key.shape=torch.Size([1, 8, 9, 128]), value.shape=torch.Size([1, 8, 9, 128])
+======================================================================
+
+======================================================================
+
+
+Final cache size: 2
+
+Diagnostic Summary:
+  Prompts processed: 3
+  Cache hits: 1
+  Cache misses: 2
+  Successful saves: 2
+  Failed saves: 0
+  Cache size increase: 2
+
+✅ ASSERTION PASSED: Cache is working correctly
+   - 2/2 cache misses were saved successfully
+   - Final cache size: 2
+[KVManager] Cache reset
+
+================================================================================
+CACHE FUNCTIONALITY TEST
+Testing with short similar sentences
+================================================================================
+
+============================================================
+Testing Group 1: AI questions (Chinese) - Primary Test
+============================================================
+
+======================================================================
+Running inference for task: group0_prompt0
+Input length: 6 tokens
+======================================================================
+
+======================================================================
+[KVManager] REQUEST: task_id=group0_prompt0, query_hash=110001101101..., query_norm=0.2505
+[KVManager] Cache size: 0, Buckets: 0
+[KVManager] Bucket candidates: [], Total cached entries: 0
+[KVManager] ❌ Cache MISS - No candidates available
+======================================================================
+
+📝 Cache MISS, running full inference (KV will be auto-saved)...
+[Cache MISS] Set model.model.current_task_id = group0_prompt0
+[LlamaModel] Forcing use_cache=True for task group0_prompt0
+[LlamaModel] Using DynamicCache, initial length: 0
+[LlamaModel] Layer 0 KV: key.shape=torch.Size([1, 8, 6, 128])
+[LlamaModel] Layer 31 KV: key.shape=torch.Size([1, 8, 6, 128])
+[LlamaModel] Extracted 32 non-None KV pairs from DynamicCache
+[LlamaModel] Auto-save check: seq_len=6, task_id=group0_prompt0, use_cache=True
+[LlamaModel] next_cache type: tuple
+[LlamaModel] next_cache length: 32
+[LlamaModel] next_cache[0] type: tuple
+[LlamaModel] next_cache[0][0] (key) type: Tensor, shape: torch.Size([1, 8, 6, 128])
+[LlamaModel] _extract_last_layer_kv: tuple detected, len=32
+[LlamaModel] _extract_last_layer_kv: next_cache[0] key.shape=torch.Size([1, 8, 6, 128])
+[LlamaModel] _extract_last_layer_kv: next_cache[-1] key.shape=torch.Size([1, 8, 6, 128])
+[LlamaModel] _extract_last_layer_kv: Found valid KV at layer 31, key.shape=torch.Size([1, 8, 6, 128])
+
+======================================================================
+[KVManager] ADD ATTEMPT: task_id=group0_prompt0, kv_present=True, key.shape=torch.Size([1, 8, 6, 128]), value.shape=torch.Size([1, 8, 6, 128])
+[KVManager] Embedding shape: torch.Size([4096]), norm=0.2505
+[KVManager] Penultimate hidden states shape: torch.Size([1, 6, 4096])
+[KVManager] LSH hash: 110001101101...
+[KVManager] ✅ Task added. Cache size: 1. Buckets: 1
+======================================================================
+
+[LlamaModel] ✅ Auto-saved KV for task group0_prompt0 (kv_seq_len=6, input_seq_len=6)
+[LlamaModel] Forcing use_cache=True for task group0_prompt0
+[LlamaModel] Using DynamicCache, initial length: 6
+[LlamaModel] Layer 0 KV: key.shape=torch.Size([1, 8, 7, 128])
+[LlamaModel] Layer 31 KV: key.shape=torch.Size([1, 8, 7, 128])
+[LlamaModel] Extracted 32 non-None KV pairs from DynamicCache
+[LlamaModel] Forcing use_cache=True for task group0_prompt0
+[LlamaModel] Using DynamicCache, initial length: 7
+[LlamaModel] Layer 0 KV: key.shape=torch.Size([1, 8, 8, 128])
+[LlamaModel] Layer 31 KV: key.shape=torch.Size([1, 8, 8, 128])
+[LlamaModel] Extracted 32 non-None KV pairs from DynamicCache
+[LlamaModel] Forcing use_cache=True for task group0_prompt0
+[LlamaModel] Using DynamicCache, initial length: 8
+[LlamaModel] Layer 0 KV: key.shape=torch.Size([1, 8, 9, 128])
+[LlamaModel] Layer 31 KV: key.shape=torch.Size([1, 8, 9, 128])
+[LlamaModel] Extracted 32 non-None KV pairs from DynamicCache
+[LlamaModel] Forcing use_cache=True for task group0_prompt0
+[LlamaModel] Using DynamicCache, initial length: 9
+[LlamaModel] Layer 0 KV: key.shape=torch.Size([1, 8, 10, 128])
+[LlamaModel] Layer 31 KV: key.shape=torch.Size([1, 8, 10, 128])
+[LlamaModel] Extracted 32 non-None KV pairs from DynamicCache
+[LlamaModel] Forcing use_cache=True for task group0_prompt0
+[LlamaModel] Using DynamicCache, initial length: 10
+[LlamaModel] Layer 0 KV: key.shape=torch.Size([1, 8, 11, 128])
+[LlamaModel] Layer 31 KV: key.shape=torch.Size([1, 8, 11, 128])
+[LlamaModel] Extracted 32 non-None KV pairs from DynamicCache
+[LlamaModel] Forcing use_cache=True for task group0_prompt0
+[LlamaModel] Using DynamicCache, initial length: 11
+[LlamaModel] Layer 0 KV: key.shape=torch.Size([1, 8, 12, 128])
+[LlamaModel] Layer 31 KV: key.shape=torch.Size([1, 8, 12, 128])
+[LlamaModel] Extracted 32 non-None KV pairs from DynamicCache
+[LlamaModel] Forcing use_cache=True for task group0_prompt0
+[LlamaModel] Using DynamicCache, initial length: 12
+[LlamaModel] Layer 0 KV: key.shape=torch.Size([1, 8, 13, 128])
+[LlamaModel] Layer 31 KV: key.shape=torch.Size([1, 8, 13, 128])
+[LlamaModel] Extracted 32 non-None KV pairs from DynamicCache
+[LlamaModel] Forcing use_cache=True for task group0_prompt0
+[LlamaModel] Using DynamicCache, initial length: 13
+[LlamaModel] Layer 0 KV: key.shape=torch.Size([1, 8, 14, 128])
+[LlamaModel] Layer 31 KV: key.shape=torch.Size([1, 8, 14, 128])
+[LlamaModel] Extracted 32 non-None KV pairs from DynamicCache
+[LlamaModel] Forcing use_cache=True for task group0_prompt0
+[LlamaModel] Using DynamicCache, initial length: 14
+[LlamaModel] Layer 0 KV: key.shape=torch.Size([1, 8, 15, 128])
+[LlamaModel] Layer 31 KV: key.shape=torch.Size([1, 8, 15, 128])
+[LlamaModel] Extracted 32 non-None KV pairs from DynamicCache
+[Auto-Save] ✅ KV auto-saved for task group0_prompt0
+
+======================================================================
+[KVManager] REQUEST: task_id=verify_group0_prompt0, query_hash=110001101101..., query_norm=0.2505
+[KVManager] Cache size: 1, Buckets: 1
+[KVManager] Bucket candidates: ['group0_prompt0'], Total cached entries: 1
+[KVManager]   Candidate group0_prompt0 sim=1.0000 norm=0.2505
+[KVManager] ✅ Cache HIT! Similarity: 1.0000 >= 0.7
+[KVManager] Matched task: group0_prompt0
+======================================================================
+
+[Verify] ✅ Task group0_prompt0 successfully found in cache (matched: group0_prompt0)
+
+🤖 Generated Answer: （AI）？
+人工智能（AI）
+⏱️ Latency: 0.399s
+📊 Cache Hit: False
+
+======================================================================
+[KVManager] CACHE STATE DUMP
+======================================================================
+Cache size: 1
+Number of buckets: 1
+Total queries: 2
+Cache hits: 1
+Cache misses: 1
+Hit rate: 50.00%
+
+Buckets:
+  110001101101...: 1 entries
+
+Top 5 entries:
+  [1] task_id=group0_prompt0, timestamp=1, access_count=2
+       key.shape=torch.Size([1, 8, 6, 128]), value.shape=torch.Size([1, 8, 6, 128])
+======================================================================
+
+======================================================================
+
+
+======================================================================
+Running inference for task: group0_prompt1
+Input length: 5 tokens
+======================================================================
+
+======================================================================
+[KVManager] REQUEST: task_id=group0_prompt1, query_hash=100011101100..., query_norm=0.2725
+[KVManager] Cache size: 1, Buckets: 1
+[KVManager] Bucket candidates: [], Total cached entries: 1
+[KVManager]   Candidate group0_prompt0 sim=0.8119 norm=0.2505
+[KVManager] ✅ Cache HIT! Similarity: 0.8119 >= 0.7
+[KVManager] Matched task: group0_prompt0
+======================================================================
+
+🎯 Cache HIT! Using cached KV from task: group0_prompt0
+🚀 LAYER SKIPPING MODE: Skipping layers 0 to N-2
+[Cache HIT] Cached KV seq_len: 6, Input seq_len: 5
+[Cache HIT] cached_penultimate_hidden.shape: torch.Size([1, 6, 4096])
+[Cache HIT] last_layer_kv key.shape: torch.Size([1, 8, 6, 128])
+[Cache HIT] Running forward with skip_to_last_layer=True...
+[LlamaModel] Using DynamicCache, initial length: 0
+[LlamaModel] 🚀 LAYER SKIPPING MODE: Using cached penultimate hidden states
+[LlamaModel]    cached_penultimate_hidden.shape: torch.Size([1, 6, 4096])
+[LlamaModel]    last_layer_kv key.shape: torch.Size([1, 8, 6, 128])
+[LlamaModel] KV Reuse: Q_len=6, KV_len=6
+[LlamaAttention] KV Reuse Mode: q_len=6, past_kv_len=6
+[LlamaModel] ✅ Layer skipping complete: Only computed layer 31
+[LlamaModel] Extracted 0 non-None KV pairs from DynamicCache
+[Cache HIT] ✅ Layer skipping complete, generated 1 tokens
+
+🤖 Generated Answer: （
+⏱️ Latency: 0.005s
+📊 Cache Hit: True
+
+======================================================================
+[KVManager] CACHE STATE DUMP
+======================================================================
+Cache size: 1
+Number of buckets: 1
+Total queries: 3
+Cache hits: 2
+Cache misses: 1
+Hit rate: 66.67%
+
+Buckets:
+  110001101101...: 1 entries
+
+Top 5 entries:
+  [1] task_id=group0_prompt0, timestamp=2, access_count=3
+       key.shape=torch.Size([1, 8, 6, 128]), value.shape=torch.Size([1, 8, 6, 128])
+======================================================================
+
+======================================================================
+
+
+======================================================================
+Running inference for task: group0_prompt2
+Input length: 9 tokens
+======================================================================
+
+======================================================================
+[KVManager] REQUEST: task_id=group0_prompt2, query_hash=100001101000..., query_norm=0.2247
+[KVManager] Cache size: 1, Buckets: 1
+[KVManager] Bucket candidates: [], Total cached entries: 1
+[KVManager]   Candidate group0_prompt0 sim=0.6396 norm=0.2505
+[KVManager] ❌ Cache MISS. Best similarity: 0.6396 < 0.7
+======================================================================
+
+📝 Cache MISS, running full inference (KV will be auto-saved)...
+[Cache MISS] Set model.model.current_task_id = group0_prompt2
+[LlamaModel] Forcing use_cache=True for task group0_prompt2
+[LlamaModel] Using DynamicCache, initial length: 0
+[LlamaModel] Layer 0 KV: key.shape=torch.Size([1, 8, 9, 128])
+[LlamaModel] Layer 31 KV: key.shape=torch.Size([1, 8, 9, 128])
+[LlamaModel] Extracted 32 non-None KV pairs from DynamicCache
+[LlamaModel] Auto-save check: seq_len=9, task_id=group0_prompt2, use_cache=True
+[LlamaModel] next_cache type: tuple
+[LlamaModel] next_cache length: 32
+[LlamaModel] next_cache[0] type: tuple
+[LlamaModel] next_cache[0][0] (key) type: Tensor, shape: torch.Size([1, 8, 9, 128])
+[LlamaModel] _extract_last_layer_kv: tuple detected, len=32
+[LlamaModel] _extract_last_layer_kv: next_cache[0] key.shape=torch.Size([1, 8, 9, 128])
+[LlamaModel] _extract_last_layer_kv: next_cache[-1] key.shape=torch.Size([1, 8, 9, 128])
+[LlamaModel] _extract_last_layer_kv: Found valid KV at layer 31, key.shape=torch.Size([1, 8, 9, 128])
+
+======================================================================
+[KVManager] ADD ATTEMPT: task_id=group0_prompt2, kv_present=True, key.shape=torch.Size([1, 8, 9, 128]), value.shape=torch.Size([1, 8, 9, 128])
+[KVManager] Embedding shape: torch.Size([4096]), norm=0.2247
+[KVManager] Penultimate hidden states shape: torch.Size([1, 9, 4096])
+[KVManager] LSH hash: 100001101000...
+[KVManager] ✅ Task added. Cache size: 2. Buckets: 2
+======================================================================
+
+[LlamaModel] ✅ Auto-saved KV for task group0_prompt2 (kv_seq_len=9, input_seq_len=9)
+[LlamaModel] Forcing use_cache=True for task group0_prompt2
+[LlamaModel] Using DynamicCache, initial length: 9
+[LlamaModel] Layer 0 KV: key.shape=torch.Size([1, 8, 10, 128])
+[LlamaModel] Layer 31 KV: key.shape=torch.Size([1, 8, 10, 128])
+[LlamaModel] Extracted 32 non-None KV pairs from DynamicCache
+[LlamaModel] Forcing use_cache=True for task group0_prompt2
+[LlamaModel] Using DynamicCache, initial length: 10
+[LlamaModel] Layer 0 KV: key.shape=torch.Size([1, 8, 11, 128])
+[LlamaModel] Layer 31 KV: key.shape=torch.Size([1, 8, 11, 128])
+[LlamaModel] Extracted 32 non-None KV pairs from DynamicCache
+[LlamaModel] Forcing use_cache=True for task group0_prompt2
+[LlamaModel] Using DynamicCache, initial length: 11
+[LlamaModel] Layer 0 KV: key.shape=torch.Size([1, 8, 12, 128])
+[LlamaModel] Layer 31 KV: key.shape=torch.Size([1, 8, 12, 128])
+[LlamaModel] Extracted 32 non-None KV pairs from DynamicCache
+[LlamaModel] Forcing use_cache=True for task group0_prompt2
+[LlamaModel] Using DynamicCache, initial length: 12
+[LlamaModel] Layer 0 KV: key.shape=torch.Size([1, 8, 13, 128])
+[LlamaModel] Layer 31 KV: key.shape=torch.Size([1, 8, 13, 128])
+[LlamaModel] Extracted 32 non-None KV pairs from DynamicCache
+[LlamaModel] Forcing use_cache=True for task group0_prompt2
+[LlamaModel] Using DynamicCache, initial length: 13
+[LlamaModel] Layer 0 KV: key.shape=torch.Size([1, 8, 14, 128])
+[LlamaModel] Layer 31 KV: key.shape=torch.Size([1, 8, 14, 128])
+[LlamaModel] Extracted 32 non-None KV pairs from DynamicCache
+[LlamaModel] Forcing use_cache=True for task group0_prompt2
+[LlamaModel] Using DynamicCache, initial length: 14
+[LlamaModel] Layer 0 KV: key.shape=torch.Size([1, 8, 15, 128])
+[LlamaModel] Layer 31 KV: key.shape=torch.Size([1, 8, 15, 128])
+[LlamaModel] Extracted 32 non-None KV pairs from DynamicCache
+[LlamaModel] Forcing use_cache=True for task group0_prompt2
+[LlamaModel] Using DynamicCache, initial length: 15
+[LlamaModel] Layer 0 KV: key.shape=torch.Size([1, 8, 16, 128])
+[LlamaModel] Layer 31 KV: key.shape=torch.Size([1, 8, 16, 128])
+[LlamaModel] Extracted 32 non-None KV pairs from DynamicCache
+[LlamaModel] Forcing use_cache=True for task group0_prompt2
+[LlamaModel] Using DynamicCache, initial length: 16
+[LlamaModel] Layer 0 KV: key.shape=torch.Size([1, 8, 17, 128])
+[LlamaModel] Layer 31 KV: key.shape=torch.Size([1, 8, 17, 128])
+[LlamaModel] Extracted 32 non-None KV pairs from DynamicCache
+[LlamaModel] Forcing use_cache=True for task group0_prompt2
+[LlamaModel] Using DynamicCache, initial length: 17
+[LlamaModel] Layer 0 KV: key.shape=torch.Size([1, 8, 18, 128])
+[LlamaModel] Layer 31 KV: key.shape=torch.Size([1, 8, 18, 128])
+[LlamaModel] Extracted 32 non-None KV pairs from DynamicCache
+[Auto-Save] ✅ KV auto-saved for task group0_prompt2
+
+======================================================================
+[KVManager] REQUEST: task_id=verify_group0_prompt2, query_hash=100001101000..., query_norm=0.2247
+[KVManager] Cache size: 2, Buckets: 2
+[KVManager] Bucket candidates: ['group0_prompt2'], Total cached entries: 2
+[KVManager]   Candidate group0_prompt2 sim=1.0000 norm=0.2247
+[KVManager] ✅ Cache HIT! Similarity: 1.0000 >= 0.7
+[KVManager] Matched task: group0_prompt2
+======================================================================
+
+[Verify] ✅ Task group0_prompt2 successfully found in cache (matched: group0_prompt2)
+
+🤖 Generated Answer: 
+人工智能（Artificial Intelligence，AI
+⏱️ Latency: 0.397s
+📊 Cache Hit: False
+
+======================================================================
+[KVManager] CACHE STATE DUMP
+======================================================================
+Cache size: 2
+Number of buckets: 2
+Total queries: 5
+Cache hits: 3
+Cache misses: 2
+Hit rate: 60.00%
+
+Buckets:
+  110001101101...: 1 entries
+  100001101000...: 1 entries
+
+Top 5 entries:
+  [1] task_id=group0_prompt0, timestamp=2, access_count=3
+       key.shape=torch.Size([1, 8, 6, 128]), value.shape=torch.Size([1, 8, 6, 128])
+  [2] task_id=group0_prompt2, timestamp=4, access_count=2
+       key.shape=torch.Size([1, 8, 9, 128]), value.shape=torch.Size([1, 8, 9, 128])
+======================================================================
+
+======================================================================
+
+
+============================================================
+Testing Group 2: ML questions (English)
+============================================================
+
+======================================================================
+Running inference for task: group1_prompt0
+Input length: 6 tokens
+======================================================================
+
+======================================================================
+[KVManager] REQUEST: task_id=group1_prompt0, query_hash=111110110101..., query_norm=0.2085
+[KVManager] Cache size: 2, Buckets: 2
+[KVManager] Bucket candidates: [], Total cached entries: 2
+[KVManager]   Candidate group0_prompt0 sim=0.3042 norm=0.2505
+[KVManager]   Candidate group0_prompt2 sim=0.2267 norm=0.2247
+[KVManager] ❌ Cache MISS. Best similarity: 0.3042 < 0.7
+======================================================================
+
+📝 Cache MISS, running full inference (KV will be auto-saved)...
+[Cache MISS] Set model.model.current_task_id = group1_prompt0
+[LlamaModel] Forcing use_cache=True for task group1_prompt0
+[LlamaModel] Using DynamicCache, initial length: 0
+[LlamaModel] Layer 0 KV: key.shape=torch.Size([1, 8, 6, 128])
+[LlamaModel] Layer 31 KV: key.shape=torch.Size([1, 8, 6, 128])
+[LlamaModel] Extracted 32 non-None KV pairs from DynamicCache
+[LlamaModel] Auto-save check: seq_len=6, task_id=group1_prompt0, use_cache=True
+[LlamaModel] next_cache type: tuple
+[LlamaModel] next_cache length: 32
+[LlamaModel] next_cache[0] type: tuple
+[LlamaModel] next_cache[0][0] (key) type: Tensor, shape: torch.Size([1, 8, 6, 128])
+[LlamaModel] _extract_last_layer_kv: tuple detected, len=32
+[LlamaModel] _extract_last_layer_kv: next_cache[0] key.shape=torch.Size([1, 8, 6, 128])
+[LlamaModel] _extract_last_layer_kv: next_cache[-1] key.shape=torch.Size([1, 8, 6, 128])
+[LlamaModel] _extract_last_layer_kv: Found valid KV at layer 31, key.shape=torch.Size([1, 8, 6, 128])
+
+======================================================================
+[KVManager] ADD ATTEMPT: task_id=group1_prompt0, kv_present=True, key.shape=torch.Size([1, 8, 6, 128]), value.shape=torch.Size([1, 8, 6, 128])
+[KVManager] Embedding shape: torch.Size([4096]), norm=0.2085
+[KVManager] Penultimate hidden states shape: torch.Size([1, 6, 4096])
+[KVManager] LSH hash: 111110110101...
+[KVManager] ✅ Task added. Cache size: 3. Buckets: 3
+======================================================================
+
+[LlamaModel] ✅ Auto-saved KV for task group1_prompt0 (kv_seq_len=6, input_seq_len=6)
+[LlamaModel] Forcing use_cache=True for task group1_prompt0
+[LlamaModel] Using DynamicCache, initial length: 6
+[LlamaModel] Layer 0 KV: key.shape=torch.Size([1, 8, 7, 128])
+[LlamaModel] Layer 31 KV: key.shape=torch.Size([1, 8, 7, 128])
+[LlamaModel] Extracted 32 non-None KV pairs from DynamicCache
+[LlamaModel] Forcing use_cache=True for task group1_prompt0
+[LlamaModel] Using DynamicCache, initial length: 7
+[LlamaModel] Layer 0 KV: key.shape=torch.Size([1, 8, 8, 128])
+[LlamaModel] Layer 31 KV: key.shape=torch.Size([1, 8, 8, 128])
+[LlamaModel] Extracted 32 non-None KV pairs from DynamicCache
+[LlamaModel] Forcing use_cache=True for task group1_prompt0
+[LlamaModel] Using DynamicCache, initial length: 8
+[LlamaModel] Layer 0 KV: key.shape=torch.Size([1, 8, 9, 128])
+[LlamaModel] Layer 31 KV: key.shape=torch.Size([1, 8, 9, 128])
+[LlamaModel] Extracted 32 non-None KV pairs from DynamicCache
+[LlamaModel] Forcing use_cache=True for task group1_prompt0
+[LlamaModel] Using DynamicCache, initial length: 9
+[LlamaModel] Layer 0 KV: key.shape=torch.Size([1, 8, 10, 128])
+[LlamaModel] Layer 31 KV: key.shape=torch.Size([1, 8, 10, 128])
+[LlamaModel] Extracted 32 non-None KV pairs from DynamicCache
+[LlamaModel] Forcing use_cache=True for task group1_prompt0
+[LlamaModel] Using DynamicCache, initial length: 10
+[LlamaModel] Layer 0 KV: key.shape=torch.Size([1, 8, 11, 128])
+[LlamaModel] Layer 31 KV: key.shape=torch.Size([1, 8, 11, 128])
+[LlamaModel] Extracted 32 non-None KV pairs from DynamicCache
+[LlamaModel] Forcing use_cache=True for task group1_prompt0
+[LlamaModel] Using DynamicCache, initial length: 11
+[LlamaModel] Layer 0 KV: key.shape=torch.Size([1, 8, 12, 128])
+[LlamaModel] Layer 31 KV: key.shape=torch.Size([1, 8, 12, 128])
+[LlamaModel] Extracted 32 non-None KV pairs from DynamicCache
+[LlamaModel] Forcing use_cache=True for task group1_prompt0
+[LlamaModel] Using DynamicCache, initial length: 12
+[LlamaModel] Layer 0 KV: key.shape=torch.Size([1, 8, 13, 128])
+[LlamaModel] Layer 31 KV: key.shape=torch.Size([1, 8, 13, 128])
+[LlamaModel] Extracted 32 non-None KV pairs from DynamicCache
+[LlamaModel] Forcing use_cache=True for task group1_prompt0
+[LlamaModel] Using DynamicCache, initial length: 13
+[LlamaModel] Layer 0 KV: key.shape=torch.Size([1, 8, 14, 128])
+[LlamaModel] Layer 31 KV: key.shape=torch.Size([1, 8, 14, 128])
+[LlamaModel] Extracted 32 non-None KV pairs from DynamicCache
+[LlamaModel] Forcing use_cache=True for task group1_prompt0
+[LlamaModel] Using DynamicCache, initial length: 14
+[LlamaModel] Layer 0 KV: key.shape=torch.Size([1, 8, 15, 128])
+[LlamaModel] Layer 31 KV: key.shape=torch.Size([1, 8, 15, 128])
+[LlamaModel] Extracted 32 non-None KV pairs from DynamicCache
+[Auto-Save] ✅ KV auto-saved for task group1_prompt0
+
+======================================================================
+[KVManager] REQUEST: task_id=verify_group1_prompt0, query_hash=111110110101..., query_norm=0.2085
+[KVManager] Cache size: 3, Buckets: 3
+[KVManager] Bucket candidates: ['group1_prompt0'], Total cached entries: 3
+[KVManager]   Candidate group1_prompt0 sim=1.0000 norm=0.2085
+[KVManager] ✅ Cache HIT! Similarity: 1.0000 >= 0.7
+[KVManager] Matched task: group1_prompt0
+======================================================================
+
+[Verify] ✅ Task group1_prompt0 successfully found in cache (matched: group1_prompt0)
+
+🤖 Generated Answer:  Machine learning is a type of artificial intelligence (AI
+⏱️ Latency: 0.398s
+📊 Cache Hit: False
+
+======================================================================
+[KVManager] CACHE STATE DUMP
+======================================================================
+Cache size: 3
+Number of buckets: 3
+Total queries: 7
+Cache hits: 4
+Cache misses: 3
+Hit rate: 57.14%
+
+Buckets:
+  110001101101...: 1 entries
+  100001101000...: 1 entries
+  111110110101...: 1 entries
+
+Top 5 entries:
+  [1] task_id=group0_prompt0, timestamp=2, access_count=3
+       key.shape=torch.Size([1, 8, 6, 128]), value.shape=torch.Size([1, 8, 6, 128])
+  [2] task_id=group0_prompt2, timestamp=4, access_count=2
+       key.shape=torch.Size([1, 8, 9, 128]), value.shape=torch.Size([1, 8, 9, 128])
+  [3] task_id=group1_prompt0, timestamp=6, access_count=2
+       key.shape=torch.Size([1, 8, 6, 128]), value.shape=torch.Size([1, 8, 6, 128])
+======================================================================
+
+======================================================================
+
+
+======================================================================
+Running inference for task: group1_prompt1
+Input length: 6 tokens
+======================================================================
+
+======================================================================
+[KVManager] REQUEST: task_id=group1_prompt1, query_hash=011100110001..., query_norm=0.2123
+[KVManager] Cache size: 3, Buckets: 3
+[KVManager] Bucket candidates: [], Total cached entries: 3
+[KVManager]   Candidate group0_prompt0 sim=0.2589 norm=0.2505
+[KVManager]   Candidate group0_prompt2 sim=0.2353 norm=0.2247
+[KVManager]   Candidate group1_prompt0 sim=0.6886 norm=0.2085
+[KVManager] ❌ Cache MISS. Best similarity: 0.6886 < 0.7
+======================================================================
+
+📝 Cache MISS, running full inference (KV will be auto-saved)...
+[Cache MISS] Set model.model.current_task_id = group1_prompt1
+[LlamaModel] Forcing use_cache=True for task group1_prompt1
+[LlamaModel] Using DynamicCache, initial length: 0
+[LlamaModel] Layer 0 KV: key.shape=torch.Size([1, 8, 6, 128])
+[LlamaModel] Layer 31 KV: key.shape=torch.Size([1, 8, 6, 128])
+[LlamaModel] Extracted 32 non-None KV pairs from DynamicCache
+[LlamaModel] Auto-save check: seq_len=6, task_id=group1_prompt1, use_cache=True
+[LlamaModel] next_cache type: tuple
+[LlamaModel] next_cache length: 32
+[LlamaModel] next_cache[0] type: tuple
+[LlamaModel] next_cache[0][0] (key) type: Tensor, shape: torch.Size([1, 8, 6, 128])
+[LlamaModel] _extract_last_layer_kv: tuple detected, len=32
+[LlamaModel] _extract_last_layer_kv: next_cache[0] key.shape=torch.Size([1, 8, 6, 128])
+[LlamaModel] _extract_last_layer_kv: next_cache[-1] key.shape=torch.Size([1, 8, 6, 128])
+[LlamaModel] _extract_last_layer_kv: Found valid KV at layer 31, key.shape=torch.Size([1, 8, 6, 128])
+
+======================================================================
+[KVManager] ADD ATTEMPT: task_id=group1_prompt1, kv_present=True, key.shape=torch.Size([1, 8, 6, 128]), value.shape=torch.Size([1, 8, 6, 128])
+[KVManager] Embedding shape: torch.Size([4096]), norm=0.2123
+[KVManager] Penultimate hidden states shape: torch.Size([1, 6, 4096])
+[KVManager] LSH hash: 011100110001...
+[KVManager] ✅ Task added. Cache size: 4. Buckets: 4
+======================================================================
+
+[LlamaModel] ✅ Auto-saved KV for task group1_prompt1 (kv_seq_len=6, input_seq_len=6)
+[LlamaModel] Forcing use_cache=True for task group1_prompt1
+[LlamaModel] Using DynamicCache, initial length: 6
+[LlamaModel] Layer 0 KV: key.shape=torch.Size([1, 8, 7, 128])
+[LlamaModel] Layer 31 KV: key.shape=torch.Size([1, 8, 7, 128])
+[LlamaModel] Extracted 32 non-None KV pairs from DynamicCache
+[LlamaModel] Forcing use_cache=True for task group1_prompt1
+[LlamaModel] Using DynamicCache, initial length: 7
+[LlamaModel] Layer 0 KV: key.shape=torch.Size([1, 8, 8, 128])
+[LlamaModel] Layer 31 KV: key.shape=torch.Size([1, 8, 8, 128])
+[LlamaModel] Extracted 32 non-None KV pairs from DynamicCache
+[LlamaModel] Forcing use_cache=True for task group1_prompt1
+[LlamaModel] Using DynamicCache, initial length: 8
+[LlamaModel] Layer 0 KV: key.shape=torch.Size([1, 8, 9, 128])
+[LlamaModel] Layer 31 KV: key.shape=torch.Size([1, 8, 9, 128])
+[LlamaModel] Extracted 32 non-None KV pairs from DynamicCache
+[LlamaModel] Forcing use_cache=True for task group1_prompt1
+[LlamaModel] Using DynamicCache, initial length: 9
+[LlamaModel] Layer 0 KV: key.shape=torch.Size([1, 8, 10, 128])
+[LlamaModel] Layer 31 KV: key.shape=torch.Size([1, 8, 10, 128])
+[LlamaModel] Extracted 32 non-None KV pairs from DynamicCache
+[LlamaModel] Forcing use_cache=True for task group1_prompt1
+[LlamaModel] Using DynamicCache, initial length: 10
+[LlamaModel] Layer 0 KV: key.shape=torch.Size([1, 8, 11, 128])
+[LlamaModel] Layer 31 KV: key.shape=torch.Size([1, 8, 11, 128])
+[LlamaModel] Extracted 32 non-None KV pairs from DynamicCache
+[LlamaModel] Forcing use_cache=True for task group1_prompt1
+[LlamaModel] Using DynamicCache, initial length: 11
+[LlamaModel] Layer 0 KV: key.shape=torch.Size([1, 8, 12, 128])
+[LlamaModel] Layer 31 KV: key.shape=torch.Size([1, 8, 12, 128])
+[LlamaModel] Extracted 32 non-None KV pairs from DynamicCache
+[LlamaModel] Forcing use_cache=True for task group1_prompt1
+[LlamaModel] Using DynamicCache, initial length: 12
+[LlamaModel] Layer 0 KV: key.shape=torch.Size([1, 8, 13, 128])
+[LlamaModel] Layer 31 KV: key.shape=torch.Size([1, 8, 13, 128])
+[LlamaModel] Extracted 32 non-None KV pairs from DynamicCache
+[LlamaModel] Forcing use_cache=True for task group1_prompt1
+[LlamaModel] Using DynamicCache, initial length: 13
+[LlamaModel] Layer 0 KV: key.shape=torch.Size([1, 8, 14, 128])
+[LlamaModel] Layer 31 KV: key.shape=torch.Size([1, 8, 14, 128])
+[LlamaModel] Extracted 32 non-None KV pairs from DynamicCache
+[LlamaModel] Forcing use_cache=True for task group1_prompt1
+[LlamaModel] Using DynamicCache, initial length: 14
+[LlamaModel] Layer 0 KV: key.shape=torch.Size([1, 8, 15, 128])
+[LlamaModel] Layer 31 KV: key.shape=torch.Size([1, 8, 15, 128])
+[LlamaModel] Extracted 32 non-None KV pairs from DynamicCache
+[Auto-Save] ✅ KV auto-saved for task group1_prompt1
+
+======================================================================
+[KVManager] REQUEST: task_id=verify_group1_prompt1, query_hash=011100110001..., query_norm=0.2123
+[KVManager] Cache size: 4, Buckets: 4
+[KVManager] Bucket candidates: ['group1_prompt1'], Total cached entries: 4
+[KVManager]   Candidate group1_prompt1 sim=1.0000 norm=0.2123
+[KVManager] ✅ Cache HIT! Similarity: 1.0000 >= 0.7
+[KVManager] Matched task: group1_prompt1
+======================================================================
+
+[Verify] ✅ Task group1_prompt1 successfully found in cache (matched: group1_prompt1)
+
+🤖 Generated Answer:  What are the types of machine learning?
+Machine learning
+⏱️ Latency: 0.396s
+📊 Cache Hit: False
+
+======================================================================
+[KVManager] CACHE STATE DUMP
+======================================================================
+Cache size: 4
+Number of buckets: 4
+Total queries: 9
+Cache hits: 5
+Cache misses: 4
+Hit rate: 55.56%
+
+Buckets:
+  110001101101...: 1 entries
+  100001101000...: 1 entries
+  111110110101...: 1 entries
+  011100110001...: 1 entries
+
+Top 5 entries:
+  [1] task_id=group0_prompt0, timestamp=2, access_count=3
+       key.shape=torch.Size([1, 8, 6, 128]), value.shape=torch.Size([1, 8, 6, 128])
+  [2] task_id=group0_prompt2, timestamp=4, access_count=2
+       key.shape=torch.Size([1, 8, 9, 128]), value.shape=torch.Size([1, 8, 9, 128])
+  [3] task_id=group1_prompt0, timestamp=6, access_count=2
+       key.shape=torch.Size([1, 8, 6, 128]), value.shape=torch.Size([1, 8, 6, 128])
+  [4] task_id=group1_prompt1, timestamp=8, access_count=2
+       key.shape=torch.Size([1, 8, 6, 128]), value.shape=torch.Size([1, 8, 6, 128])
+======================================================================
+
+======================================================================
+
+
+================================================================================
+TEST RESULTS SUMMARY
+================================================================================
+
+Prompt                         Cache Hit    Saved    Latency   
+------------------------------------------------------------
+什么是人工智能                        ❌ MISS       ✅        0.399s
+人工智能是什么                        ✅ HIT        N/A      0.005s
+解释人工智能的含义                      ❌ MISS       ✅        0.397s
+What is machine learning?      ❌ MISS       ✅        0.398s
+Explain machine learning.      ❌ MISS       ✅        0.396s
+
+------------------------------------------------------------
+Total Queries: 5
+Cache Hits: 1
+Cache Misses: 4
+Hit Rate: 20.00%
+
+KV Manager Statistics:
+  Cache Size: 4
+  Num Buckets: 4
+  Total Queries: 9
+  Cache Hits: 5
+  Cache Misses: 4
+  Hit Rate: 55.56%
+
+================================================================================
+TEST COMPLETE
+================================================================================
+模型已释放，显存已清理
+/mnt/sda1/homie_cache does not exist.

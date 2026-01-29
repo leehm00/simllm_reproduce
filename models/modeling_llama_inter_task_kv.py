@@ -18,8 +18,13 @@ from transformers.modeling_outputs import BaseModelOutputWithPast, CausalLMOutpu
 from transformers.models.llama.modeling_llama import (
     LlamaModel as _LlamaModel,
     LlamaForCausalLM as _LlamaForCausalLM,
-    LlamaDecoderLayer,
+    LlamaDecoderLayer as _LlamaDecoderLayer,
+    LlamaAttention as _LlamaAttention,
+    LlamaMLP,
     LlamaRMSNorm,
+    LlamaRotaryEmbedding,
+    apply_rotary_pos_emb,
+    repeat_kv,
     logger
 )
 from transformers.utils import add_start_docstrings_to_model_forward
@@ -35,6 +40,182 @@ except ImportError:
 from .inter_task_kv_manager import InterTaskKVManager, TaskCacheEntry
 
 
+class LlamaAttentionWithKVReuse(_LlamaAttention):
+    """
+    LlamaAttention with KV Reuse Mode support.
+    
+    In KV reuse mode:
+    - Only compute Q from the new input
+    - Directly use the old K/V without concatenation
+    - Perform Attention(Q_new, K_old, V_old)
+    """
+    
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_value: Optional[Tuple[torch.Tensor]] = None,
+        output_attentions: bool = False,
+        use_cache: bool = False,
+        cache_position: Optional[torch.LongTensor] = None,
+        kv_reuse_mode: bool = False,
+        **kwargs,
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
+        """
+        Forward pass with optional KV reuse mode.
+        
+        Args:
+            kv_reuse_mode: If True, skip K/V projection and use past_key_value directly
+                          without concatenation. Attention mask is adjusted accordingly.
+        """
+        bsz, q_len, _ = hidden_states.size()
+        
+        if kv_reuse_mode and past_key_value is not None:
+            # ============================================================
+            # KV REUSE MODE: Only compute Q, use old K/V directly
+            # ============================================================
+            print(f"[LlamaAttention] KV Reuse Mode: q_len={q_len}, past_kv_len={past_key_value[0].shape[2]}")
+            
+            # Only compute Query projection
+            query_states = self.q_proj(hidden_states)
+            
+            # Use cached K/V directly (no projection, no concatenation)
+            key_states = past_key_value[0]
+            value_states = past_key_value[1]
+            
+            # Reshape query to match attention format
+            query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
+            
+            # key_states and value_states are already in the right shape: (bsz, num_kv_heads, kv_len, head_dim)
+            kv_seq_len = key_states.shape[2]
+            
+            # Apply rotary embeddings to query only
+            # For KV reuse, we need to apply RoPE to Q with positions matching the KV sequence
+            if position_ids is None:
+                # Default: use positions 0 to q_len-1
+                position_ids = torch.arange(q_len, device=hidden_states.device).unsqueeze(0)
+            
+            # Get rotary embeddings
+            if hasattr(self, 'rotary_emb'):
+                cos, sin = self.rotary_emb(value_states, position_ids)
+                # Apply RoPE to query only (K/V already have RoPE applied from original computation)
+                query_states, _ = apply_rotary_pos_emb(query_states, query_states, cos, sin)
+            
+            # Repeat KV for GQA if needed
+            key_states = repeat_kv(key_states, self.num_key_value_groups)
+            value_states = repeat_kv(value_states, self.num_key_value_groups)
+            
+            # Compute attention scores: Q(q_len) x K(kv_len)^T
+            attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(self.head_dim)
+            
+            # In KV reuse mode, we typically want full attention (no causal mask)
+            # because Q is attending to the entire cached KV sequence
+            # If attention_mask is provided and has the right shape, use it
+            if attention_mask is not None:
+                # Check if mask shape matches
+                expected_mask_shape = (bsz, 1, q_len, kv_seq_len)
+                if attention_mask.shape == expected_mask_shape:
+                    attn_weights = attn_weights + attention_mask
+                else:
+                    # Ignore incompatible mask in KV reuse mode
+                    print(f"[LlamaAttention] KV Reuse: Ignoring attention_mask with shape {attention_mask.shape}, expected {expected_mask_shape}")
+            
+            # Softmax and dropout
+            attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
+            attn_weights = nn.functional.dropout(attn_weights, p=self.attention_dropout, training=self.training)
+            
+            # Compute attention output
+            attn_output = torch.matmul(attn_weights, value_states)
+            
+            # Reshape and project output
+            attn_output = attn_output.transpose(1, 2).contiguous()
+            attn_output = attn_output.reshape(bsz, q_len, self.hidden_size)
+            attn_output = self.o_proj(attn_output)
+            
+            # In KV reuse mode, we don't update the cache (return the same past_key_value)
+            if not output_attentions:
+                attn_weights = None
+            
+            return attn_output, attn_weights, past_key_value
+        
+        else:
+            # ============================================================
+            # NORMAL MODE: Standard attention with K/V projection
+            # ============================================================
+            return super().forward(
+                hidden_states=hidden_states,
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+                past_key_value=past_key_value,
+                output_attentions=output_attentions,
+                use_cache=use_cache,
+                cache_position=cache_position,
+                **kwargs,
+            )
+
+
+class LlamaDecoderLayerWithKVReuse(_LlamaDecoderLayer):
+    """
+    LlamaDecoderLayer with KV Reuse Mode support.
+    Propagates kv_reuse_mode flag to the attention layer.
+    """
+    
+    def __init__(self, config, layer_idx: int):
+        super().__init__(config, layer_idx)
+        # Replace the attention module with our custom one
+        self.self_attn = LlamaAttentionWithKVReuse(config=config, layer_idx=layer_idx)
+    
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_value: Optional[Tuple[torch.Tensor]] = None,
+        output_attentions: Optional[bool] = False,
+        use_cache: Optional[bool] = False,
+        cache_position: Optional[torch.LongTensor] = None,
+        kv_reuse_mode: bool = False,
+        **kwargs,
+    ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
+        """
+        Forward pass with optional KV reuse mode.
+        """
+        residual = hidden_states
+        
+        hidden_states = self.input_layernorm(hidden_states)
+        
+        # Self Attention with KV reuse mode
+        hidden_states, self_attn_weights, present_key_value = self.self_attn(
+            hidden_states=hidden_states,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_value=past_key_value,
+            output_attentions=output_attentions,
+            use_cache=use_cache,
+            cache_position=cache_position,
+            kv_reuse_mode=kv_reuse_mode,
+            **kwargs,
+        )
+        hidden_states = residual + hidden_states
+        
+        # Fully Connected (MLP)
+        residual = hidden_states
+        hidden_states = self.post_attention_layernorm(hidden_states)
+        hidden_states = self.mlp(hidden_states)
+        hidden_states = residual + hidden_states
+        
+        outputs = (hidden_states,)
+        
+        if output_attentions:
+            outputs += (self_attn_weights,)
+        
+        if use_cache:
+            outputs += (present_key_value,)
+        
+        return outputs
+
+
 class LlamaModelWithKVReuse(_LlamaModel):
     """
     Llama Model with Inter-Task KV Reuse capability
@@ -46,6 +227,11 @@ class LlamaModelWithKVReuse(_LlamaModel):
         self.kv_manager = None  # Will be set externally
         self.enable_kv_reuse = False
         self.current_task_id = None  # Task ID for auto-save during prefill
+        
+        # Replace decoder layers with our custom ones that support KV reuse mode
+        self.layers = nn.ModuleList(
+            [LlamaDecoderLayerWithKVReuse(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
+        )
     
     def set_kv_manager(self, kv_manager: InterTaskKVManager):
         """Set the global KV manager"""
@@ -437,30 +623,38 @@ class LlamaModelWithKVReuse(_LlamaModel):
             penultimate_hidden_states = hidden_states.clone()
             
             # Prepare the cached KV for the last layer
-            # For DynamicCache, we need to populate it with the cached KV
-            if use_dynamic_cache:
-                # Update DynamicCache with the cached KV for the last layer
-                dynamic_cache.update(last_layer_kv[0], last_layer_kv[1], last_layer_idx)
-                
-                layer_outputs = decoder_layer(
-                    hidden_states,
-                    attention_mask=attention_mask,
-                    position_ids=position_ids,
-                    past_key_value=dynamic_cache,
-                    output_attentions=output_attentions,
-                    use_cache=use_cache,
-                    cache_position=cache_position,
-                )
-            else:
-                layer_outputs = decoder_layer(
-                    hidden_states,
-                    attention_mask=attention_mask,
-                    position_ids=position_ids,
-                    past_key_value=last_layer_kv,
-                    output_attentions=output_attentions,
-                    use_cache=use_cache,
-                    cache_position=cache_position,
-                )
+            # In KV reuse mode, we pass the cached KV directly and set kv_reuse_mode=True
+            # This tells the attention layer to:
+            # 1. Only compute Q from hidden_states
+            # 2. Use the cached K/V directly without concatenation
+            # 3. Ignore the standard causal attention mask
+            
+            # Create a proper attention mask for KV reuse mode
+            # Q has shape (batch, q_len, hidden), K/V have shape (batch, num_heads, kv_len, head_dim)
+            kv_seq_len = last_layer_kv[0].shape[2]
+            q_len = hidden_states.shape[1]
+            
+            # In KV reuse mode, Q attends to the entire cached KV sequence
+            # We create a mask that allows full attention (no causal masking)
+            kv_reuse_attention_mask = torch.zeros(
+                (batch_size, 1, q_len, kv_seq_len),
+                dtype=hidden_states.dtype,
+                device=hidden_states.device
+            )
+            
+            print(f"[LlamaModel] KV Reuse: Q_len={q_len}, KV_len={kv_seq_len}")
+            
+            # Call the decoder layer with kv_reuse_mode=True
+            layer_outputs = decoder_layer(
+                hidden_states,
+                attention_mask=kv_reuse_attention_mask,
+                position_ids=position_ids,
+                past_key_value=last_layer_kv,  # Pass the cached KV directly (not DynamicCache)
+                output_attentions=output_attentions,
+                use_cache=use_cache,
+                cache_position=cache_position,
+                kv_reuse_mode=True,  # Enable KV reuse mode in attention
+            )
             
             hidden_states = layer_outputs[0]
             
