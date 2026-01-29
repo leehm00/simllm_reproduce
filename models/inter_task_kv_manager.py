@@ -271,7 +271,7 @@ class InterTaskKVManager:
         
         if not search_candidates:
             self.cache_misses += 1
-            print(f"[KVManager] ❌ Cache MISS - No candidates available")
+            print(f"[KVManager]  Cache MISS - No candidates available")
             print(f"{'='*70}\n")
             return None
         
@@ -298,13 +298,13 @@ class InterTaskKVManager:
             best_match.access_count += 1
             self.current_timestamp += 1
             
-            print(f"[KVManager] ✅ Cache HIT! Similarity: {best_similarity:.4f} >= {self.similarity_threshold}")
+            print(f"[KVManager]  Cache HIT! Similarity: {best_similarity:.4f} >= {self.similarity_threshold}")
             print(f"[KVManager] Matched task: {best_match.task_id}")
             print(f"{'='*70}\n")
             return best_match
         else:
             self.cache_misses += 1
-            print(f"[KVManager] ❌ Cache MISS. Best similarity: {best_similarity:.4f} < {self.similarity_threshold}")
+            print(f"[KVManager]  Cache MISS. Best similarity: {best_similarity:.4f} < {self.similarity_threshold}")
             print(f"{'='*70}\n")
             return None
     
@@ -361,7 +361,7 @@ class InterTaskKVManager:
             entry.timestamp = self.current_timestamp
             self.current_timestamp += 1
             self.cache_entries.move_to_end(task_id)
-            print(f"[KVManager] ✅ Task updated successfully")
+            print(f"[KVManager]  Task updated successfully")
             print(f"[KVManager] Cache size: {len(self.cache_entries)}. Buckets: {len(self.hash_buckets)}")
             print(f"{'='*70}\n")
             return True
@@ -393,7 +393,7 @@ class InterTaskKVManager:
             self.hash_buckets[lsh_hash] = []
         self.hash_buckets[lsh_hash].append(entry)
         
-        print(f"[KVManager] ✅ Task added. Cache size: {len(self.cache_entries)}. Buckets: {len(self.hash_buckets)}")
+        print(f"[KVManager]  Task added. Cache size: {len(self.cache_entries)}. Buckets: {len(self.hash_buckets)}")
         print(f"{'='*70}\n")
         return True
     

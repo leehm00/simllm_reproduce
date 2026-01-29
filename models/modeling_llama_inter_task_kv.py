@@ -680,7 +680,7 @@ class LlamaModelWithKVReuse(_LlamaModel):
             if output_attentions:
                 all_self_attns += (layer_outputs[1],)
             
-            print(f"[LlamaModel] ✅ Layer skipping complete: Only computed layer {last_layer_idx}")
+            print(f"[LlamaModel] Layer skipping complete: Only computed layer {last_layer_idx}")
         
         else:
             # ============================================================
@@ -878,11 +878,11 @@ class LlamaModelWithKVReuse(_LlamaModel):
                     penultimate_hidden_states=penultimate_hidden_states
                 )
                 if add_success:
-                    print(f"[LlamaModel] ✅ Auto-saved KV for task {effective_task_id} (kv_seq_len={last_layer_kv[0].shape[2]}, input_seq_len={actual_seq_len})")
+                    print(f"[LlamaModel]  Auto-saved KV for task {effective_task_id} (kv_seq_len={last_layer_kv[0].shape[2]}, input_seq_len={actual_seq_len})")
                 else:
-                    print(f"[LlamaModel] ⚠️ Failed to auto-save KV for task {effective_task_id}")
+                    print(f"[LlamaModel]  Failed to auto-save KV for task {effective_task_id}")
             else:
-                logger.warning(f"[LlamaModel] ⚠️ Auto-save failed: Could not extract valid last_layer_kv. next_cache type={type(next_cache).__name__}, seq_len={actual_seq_len}")
+                logger.warning(f"[LlamaModel]  Auto-save failed: Could not extract valid last_layer_kv. next_cache type={type(next_cache).__name__}, seq_len={actual_seq_len}")
 
         if not return_dict:
             return tuple(v for v in [hidden_states, next_cache, all_hidden_states, all_self_attns] if v is not None)
